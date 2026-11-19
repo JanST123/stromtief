@@ -110,6 +110,41 @@ def get_active_eos_url() -> str:
     return settings.get("eos_url", DEFAULT_EOS_URL).rstrip("/")
 
 
+def ensure_eos_initialized(eos_url: Optional[str] = None) -> None:
+    """Ensure EOS has an active electricity price provider configured on cold start."""
+    base_url = (eos_url or get_active_eos_url()).rstrip("/")
+    try:
+        req = Request(f"{base_url}/v1/config", headers={"User-Agent": "SmartChargePlanner/1.0"})
+        with urlopen(req, timeout=4) as response:
+            cfg = json.loads(response.read().decode("utf-8"))
+            current_provider = cfg.get("elecprice", {}).get("provider")
+            if not current_provider:
+                settings = load_settings()
+                provider = settings.get("provider", "ElecPriceEnergyCharts")
+                bidding_zone = settings.get("bidding_zone", "DE-LU")
+                config_body = {"elecprice": {"provider": provider}}
+                if provider == "ElecPriceEnergyCharts":
+                    config_body["elecprice"]["energycharts"] = {"bidding_zone": bidding_zone}
+                put_req = Request(
+                    f"{base_url}/v1/config",
+                    data=json.dumps(config_body).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "User-Agent": "SmartChargePlanner/1.0"},
+                    method="PUT",
+                )
+                with urlopen(put_req, timeout=5):
+                    pass
+                update_req = Request(
+                    f"{base_url}/v1/prediction/update",
+                    data=b"{}",
+                    headers={"Content-Type": "application/json", "User-Agent": "SmartChargePlanner/1.0"},
+                    method="POST",
+                )
+                with urlopen(update_req, timeout=10):
+                    pass
+    except Exception as e:
+        print(f"[Info] EOS initialization check: {e}")
+
+
 def fetch_eos_prices(eos_url: Optional[str] = None, force_refresh: bool = False) -> Dict[str, float]:
     """Fetch current price predictions with in-memory caching."""
     global _PRICE_CACHE, _PRICE_CACHE_TIME
@@ -128,7 +163,13 @@ def fetch_eos_prices(eos_url: Optional[str] = None, force_refresh: bool = False)
             if prices:
                 _PRICE_CACHE = prices
                 _PRICE_CACHE_TIME = now
+            elif not _PRICE_CACHE:
+                ensure_eos_initialized(base_url)
             return prices
+    except urllib.error.HTTPError as e:
+        if e.code == 404 and not _PRICE_CACHE:
+            ensure_eos_initialized(base_url)
+        return _PRICE_CACHE if _PRICE_CACHE else {}
     except Exception as e:
         print(f"[Warning] Failed to fetch prices from EOS ({url}): {e}")
         return _PRICE_CACHE if _PRICE_CACHE else {}
