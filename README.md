@@ -1,13 +1,28 @@
-# ⚡️ EOS Smart Charge Planner
+# ⚡️ Stromtief — Smart EV Charge Planner
 
 > **Smart EV charging optimization with dynamic electricity tariffs (e.g. Ostrom, Tibber, EPEX Spot) powered by [Akkudoktor EOS](https://github.com/Akkudoktor-EOS/EOS).**
 >
-> Designed for local self-hosting **or** as a secure, multi-tenant online service for multiple users.
+> 🌐 **Live Web App**: [https://app.stromtief.de](https://app.stromtief.de)  
+> 🏡 **Landing Page**: [https://stromtief.de](https://stromtief.de)  
+> 🐙 **GitHub Repository**: [https://github.com/JanST123/stromtief](https://github.com/JanST123/stromtief)
+>
+> Designed for local self-hosting **or** as a secure, privacy-first online service for EV drivers.
 
-The **EOS Smart Charge Planner** provides a clean, modern, and responsive web interface that answers key questions for EV owners:
+The **Stromtief Smart Charge Planner** provides a clean, modern, and responsive web interface that answers key questions for EV owners:
 1. **When to plug in**: Schedule charging so the vehicle reaches the desired state-of-charge (SoC) before your departure deadline at the lowest market electricity rates.
 2. **Transparent total costs**: Clear breakdown of day-ahead spot market prices, local grid fees, and value-added tax (VAT).
 3. **Savings estimation**: Immediate comparison showing how much money is saved compared to unmanaged charging.
+
+---
+
+## 🌐 Live Web App
+
+Try it online directly in your browser without any installation:  
+👉 **[https://app.stromtief.de](https://app.stromtief.de)**
+
+* 100% private: EV settings & tariffs are stored strictly in your browser (`LocalStorage`).
+* Zero tracking cookies, no user registration, no server database.
+* Cross-device sync via QR-Code & link fragment (`#cfg=...`).
 
 ---
 
@@ -62,8 +77,8 @@ flowchart LR
 ### Option 1: Local Python Setup
 
 ```bash
-git clone https://github.com/YOUR-USER/eos-smart-charge-ui.git
-cd eos-smart-charge-ui
+git clone https://github.com/JanST123/stromtief.git
+cd stromtief
 
 # Install dependencies
 pip install -r requirements.txt
