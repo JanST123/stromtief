@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stromtief — Smarte E-Auto Ladeplanung mit dynamischen Stromtarifen</title>
+    <meta name="description" content="Lade dein Elektroauto, wenn der Strom an der Börse am günstigsten ist. Kostenloser, datenschutzfreundlicher Ladeplaner powered by Akkudoktor EOS.">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220%22%22><text y=%2222%22 font-size=%2220%22>⚡️</text></svg>">
+    <style>
+        :root {
+            --bg-base: #090d16;
+            --bg-card: #0f172a;
+            --bg-card-hover: #1e293b;
+            --border: #1e293b;
+            --border-highlight: #334155;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --emerald: #10b981;
+            --emerald-glow: rgba(16, 185, 129, 0.2);
+            --sky: #38bdf8;
+            --sky-glow: rgba(56, 189, 248, 0.15);
+            --amber: #f59e0b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-base);
+            color: var(--text-main);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Ambient background glow */
+        .glow-sphere {
+            position: absolute;
+            top: -150px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 800px;
+            height: 500px;
+            background: radial-gradient(circle, rgba(16, 185, 129, 0.15) 0%, rgba(56, 189, 248, 0.08) 40%, transparent 70%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            max-width: 1140px;
+            margin: 0 auto;
+            padding: 0 24px;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* Navbar */
+        nav {
+            padding: 24px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.35rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            color: #fff;
+            text-decoration: none;
+        }
+
+        .logo-icon {
+            width: 38px;
+            height: 38px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #10b981, #0284c7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            box-shadow: 0 0 15px var(--emerald-glow);
+        }
+
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .nav-link {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.95rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .nav-link:hover {
+            color: #fff;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 12px 24px;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: #fff;
+            box-shadow: 0 4px 20px var(--emerald-glow);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(16, 185, 129, 0.35);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            color: #fff;
+            border: 1px solid var(--border-highlight);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+            transform: translateY(-2px);
+        }
+
+        /* Hero */
+        .hero {
+            padding: 90px 0 60px;
+            text-align: center;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            border-radius: 9999px;
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: #34d399;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-bottom: 24px;
+        }
+
+        .hero h1 {
+            font-size: 3.2rem;
+            font-weight: 800;
+            line-height: 1.15;
+            letter-spacing: -1.5px;
+            margin-bottom: 20px;
+            background: linear-gradient(180deg, #ffffff 0%, #cbd5e1 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero h1 span {
+            background: linear-gradient(135deg, #34d399 0%, #38bdf8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero p {
+            max-width: 680px;
+            margin: 0 auto 36px;
+            font-size: 1.15rem;
+            color: var(--text-muted);
+            line-height: 1.7;
+        }
+
+        .hero-actions {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        /* Preview Card */
+        .preview-wrapper {
+            margin: 50px auto 90px;
+            background: linear-gradient(180deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.9) 100%);
+            border: 1px solid var(--border-highlight);
+            border-radius: 20px;
+            padding: 28px;
+            box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.6);
+            position: relative;
+            backdrop-filter: blur(12px);
+        }
+
+        .preview-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .dots {
+            display: flex;
+            gap: 6px;
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .dot-red { background: #ef4444; }
+        .dot-yellow { background: #f59e0b; }
+        .dot-green { background: #10b981; }
+
+        .preview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            text-align: left;
+        }
+
+        .preview-box {
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        .preview-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+        }
+
+        .preview-val {
+            font-size: 1.35rem;
+            font-weight: 800;
+            color: #fff;
+        }
+
+        .preview-val.highlight {
+            color: #34d399;
+        }
+
+        /* Features Section */
+        .section-title {
+            text-align: center;
+            margin-bottom: 50px;
+        }
+
+        .section-title h2 {
+            font-size: 2.2rem;
+            font-weight: 800;
+            letter-spacing: -0.8px;
+            margin-bottom: 12px;
+        }
+
+        .section-title p {
+            color: var(--text-muted);
+            font-size: 1.05rem;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 24px;
+            margin-bottom: 90px;
+        }
+
+        .feature-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 30px;
+            transition: all 0.25s;
+        }
+
+        .feature-card:hover {
+            border-color: var(--border-highlight);
+            transform: translateY(-3px);
+            background: var(--bg-card-hover);
+        }
+
+        .feature-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .feature-card h3 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+
+        .feature-card p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+
+        /* How it works */
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 24px;
+            margin-bottom: 90px;
+        }
+
+        .step-card {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 28px;
+            position: relative;
+        }
+
+        .step-num {
+            display: inline-block;
+            font-size: 0.85rem;
+            font-weight: 800;
+            color: #38bdf8;
+            background: rgba(56, 189, 248, 0.1);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            padding: 4px 10px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+        }
+
+        .step-card h4 {
+            font-size: 1.15rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .step-card p {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        /* EOS Tribute Box */
+        .eos-banner {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(56, 189, 248, 0.05) 100%);
+            border: 1px solid rgba(16, 185, 129, 0.25);
+            border-radius: 20px;
+            padding: 36px;
+            margin-bottom: 90px;
+            display: flex;
+            align-items: center;
+            gap: 30px;
+            flex-wrap: wrap;
+        }
+
+        .eos-icon {
+            font-size: 3rem;
+        }
+
+        .eos-content {
+            flex: 1;
+            min-width: 280px;
+        }
+
+        .eos-content h3 {
+            font-size: 1.35rem;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+
+        .eos-content p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            line-height: 1.6;
+            margin-bottom: 14px;
+        }
+
+        .eos-link {
+            color: #38bdf8;
+            text-decoration: none;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .eos-link:hover {
+            text-decoration: underline;
+        }
+
+        /* CTA Banner */
+        .cta-box {
+            text-align: center;
+            padding: 60px 30px;
+            background: radial-gradient(circle, rgba(16, 185, 129, 0.12) 0%, rgba(15, 23, 42, 0.8) 70%);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 24px;
+            margin-bottom: 80px;
+        }
+
+        .cta-box h2 {
+            font-size: 2.4rem;
+            font-weight: 800;
+            margin-bottom: 14px;
+        }
+
+        .cta-box p {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+            max-width: 550px;
+            margin: 0 auto 30px;
+        }
+
+        /* Footer */
+        footer {
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            padding: 40px 0;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        footer a {
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        footer a:hover {
+            color: #fff;
+        }
+
+        .footer-links {
+            display: flex;
+            gap: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2.3rem; }
+            .hero p { font-size: 1rem; }
+            .preview-wrapper { padding: 16px; }
+            .cta-box h2 { font-size: 1.8rem; }
+            footer { flex-direction: column; text-align: center; }
+        }
+    </style>
+</head>
+<body>
+    <div class="glow-sphere"></div>
+
+    <div class="container">
+        <!-- Navbar -->
+        <nav>
+            <a href="/" class="logo">
+                <div class="logo-icon">⚡️</div>
+                <span>stromtief</span>
+            </a>
+            <div class="nav-links">
+                <a href="#funktionen" class="nav-link">Funktionen</a>
+                <a href="#wie-es-funktioniert" class="nav-link">Funktionsweise</a>
+                <a href="https://github.com/JanST123/stromtief" target="_blank" rel="noopener" class="nav-link">GitHub</a>
+                <a href="https://app.stromtief.de" class="btn btn-primary" style="padding: 8px 18px; font-size: 0.9rem;">Zur App ⚡️</a>
+            </div>
+        </nav>
+
+        <!-- Hero -->
+        <section class="hero">
+            <div class="badge">
+                <span>🌱 100 % Open Source & werbefrei</span>
+            </div>
+            <h1>Lade dein E-Auto im <span>Stromtief</span>.<br>Spart bares Geld bei jedem Kilometer.</h1>
+            <p>
+                Börsenstrompreise schwanken von Stunde zu Stunde. <strong>stromtief</strong> berechnet auf die Minute genau, wann dein Auto am günstigsten lädt, damit der Akku zur gewünschten Abfahrtszeit voll ist.
+            </p>
+            <div class="hero-actions">
+                <a href="https://app.stromtief.de" class="btn btn-primary">
+                    <span>Jetzt Ladezeit berechnen</span>
+                    <span>→</span>
+                </a>
+                <a href="https://github.com/JanST123/stromtief" target="_blank" rel="noopener" class="btn btn-secondary">
+                    <span>⭐️ Quellcode auf GitHub</span>
+                </a>
+            </div>
+
+            <!-- Preview Card -->
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <div class="dots">
+                        <div class="dot dot-red"></div>
+                        <div class="dot dot-yellow"></div>
+                        <div class="dot dot-green"></div>
+                    </div>
+                    <div style="font-size: 0.8rem; color: #94a3b8; font-weight: 600;">Beispiel-Planung für Kia EV3 (53 kWh) • Abfahrt: Morgen 07:00 Uhr</div>
+                    <div style="font-size: 0.8rem; color: #34d399; font-weight: 700;">🟢 Optimales Ladefenster</div>
+                </div>
+                <div class="preview-grid">
+                    <div class="preview-box">
+                        <div class="preview-label">Empfohlene Ladezeit</div>
+                        <div class="preview-val highlight">02:15 – 05:45 Uhr</div>
+                        <div style="font-size: 0.75rem; color: #94a3b8; margin-top: 4px;">Dauer: 3h 30m @ 11 kW</div>
+                    </div>
+                    <div class="preview-box">
+                        <div class="preview-label">Durchschnittspreis (Brutto)</div>
+                        <div class="preview-val">17,4 ct <span style="font-size: 0.85rem; font-weight: 500;">/ kWh</span></div>
+                        <div style="font-size: 0.75rem; color: #94a3b8; margin-top: 4px;">Spot 2,4 ct + 15 ct Netzkosten + MwSt.</div>
+                    </div>
+                    <div class="preview-box">
+                        <div class="preview-label">Gesamtkosten Ladevorgang</div>
+                        <div class="preview-val highlight">6,18 €</div>
+                        <div style="font-size: 0.75rem; color: #94a3b8; margin-top: 4px;">für 35,5 kWh Ladung</div>
+                    </div>
+                    <div class="preview-box">
+                        <div class="preview-label">Deine Ersparnis</div>
+                        <div class="preview-val highlight" style="color: #38bdf8;">+ 4,92 € gespart</div>
+                        <div style="font-size: 0.75rem; color: #94a3b8; margin-top: 4px;">vs. ungesteuertes Sofortladen</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Features -->
+        <section id="funktionen" style="margin-bottom: 90px;">
+            <div class="section-title">
+                <h2>Für Elektroauto-Fahrer mit dynamischem Stromtarif</h2>
+                <p>Perfekt abgestimmt auf Tarife von Ostrom, Tibber, Rabot Charge und EPEX Spot Day-Ahead-Börsenpreise.</p>
+            </div>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">⚡️</div>
+                    <h3>Echte Börsenpreise (EPEX Spot)</h3>
+                    <p>Täglich ab 13:00 Uhr stehen die Strombörsenpreise für den gesamten nächsten Tag bereit. stromtief analysiert 48 Stunden im Voraus.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">💶</div>
+                    <h3>24h stündliche Netzentgelte (§ 14a EnWG)</h3>
+                    <p>Ob pauschal oder zeitvariabel (Modul 3 / Hoch- und Niedertarif): Die echten Netzkosten für jede Stunde (0–23 Uhr) fließen exakt in den Preis ein.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🧾</div>
+                    <h3>Mehrwertsteuer auf Gesamtpreis</h3>
+                    <p>Gesetzlich korrekt berechnet: Der Steuersatz (z. B. 19% DE) wird auf die Summe aus Börsenpreis und Fixgebühren angewendet.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🚗</div>
+                    <h3>Fahrzeug- & Lade-Presets</h3>
+                    <p>Passgenaue Voreinstellungen für gängige EVs (Kia EV3, Tesla Model 3 etc.) mit anpassbarem SoC-Hub, Ladeleistung (3,7–22 kW) und Ladeeffizienz.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🛡️</div>
+                    <h3>100 % Privatsphäre & LocalStorage</h3>
+                    <p>Keine Registrierung, keine Passwörter, keine Cookies und keine Benutzerdatenbank. Deine Einstellungen bleiben sicher im Browser gespeichert.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📲</div>
+                    <h3>Cross-Device Sync per QR-Code</h3>
+                    <p>Einmal am Desktop konfiguriert? Scanne einfach den QR-Code mit der Smartphone-Kamera – alle Einstellungen werden sofort ohne Serverkontakt übertragen.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- How it works -->
+        <section id="wie-es-funktioniert" style="margin-bottom: 90px;">
+            <div class="section-title">
+                <h2>In 3 Schritten zum günstigsten Ladefenster</h2>
+                <p>Einfach, transparent und ohne komplizierte Einrichtung.</p>
+            </div>
+            <div class="steps">
+                <div class="step-card">
+                    <div class="step-num">Schritt 1</div>
+                    <h4>Auto & Ladestand wählen</h4>
+                    <p>Wähle deine Akkukapazität, den aktuellen Ladestand (z. B. 25 %) und deinen gewünschten Ziel-SoC (z. B. 80 %).</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-num">Schritt 2</div>
+                    <h4>Abfahrtszeit festlegen</h4>
+                    <p>Sage stromtief, wann du losfahren willst (z. B. <em>Morgen um 07:00 Uhr</em>). Die App plant das Ladefenster pünktlich vor deiner Abfahrt.</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-num">Schritt 3</div>
+                    <h4>Stromtief nutzen & sparen</h4>
+                    <p>Lies den optimalen Ladezeitraum ab und stelle den Timer deiner Wallbox oder deines Autos ein – bares Geld sparen bei jeder kWh.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- EOS Tribute -->
+        <div class="eos-banner">
+            <div class="eos-icon">🧠</div>
+            <div class="eos-content">
+                <h3>Angetrieben von Akkudoktor EOS</h3>
+                <p>
+                    Die Preisprognosen und Berechnungsmodelle basieren auf dem fantastischen Open-Source-Projekt <strong>Akkudoktor EOS</strong> (Dr. Andreas Schmitz & Community). stromtief nutzt EOS als abgesichertes, zustandsloses Backend und erweitert es um eine intuitive E-Auto-Ladeoberfläche für Endanwender.
+                </p>
+                <a href="https://github.com/Akkudoktor-EOS/EOS" target="_blank" rel="noopener" class="eos-link">
+                    <span>Akkudoktor EOS auf GitHub ansehen</span>
+                    <span>→</span>
+                </a>
+            </div>
+        </div>
+
+        <!-- CTA Box -->
+        <div class="cta-box">
+            <h2>Bereit fürs nächste Stromtief?</h2>
+            <p>Starte jetzt kostenlos und ohne Anmeldung. Funktioniert auf jedem modernen Browser und Smartphone.</p>
+            <a href="https://app.stromtief.de" class="btn btn-primary" style="padding: 16px 36px; font-size: 1.15rem;">
+                <span>Zur Web-App wechseln</span>
+                <span>⚡️</span>
+            </a>
+        </div>
+
+        <!-- Footer -->
+        <footer>
+            <div>
+                © 2026 <strong>stromtief.de</strong> • Bereitgestellt unter der <a href="https://github.com/JanST123/stromtief/blob/main/LICENSE" target="_blank" rel="noopener">MIT-Lizenz</a>
+            </div>
+            <div class="footer-links">
+                <a href="https://app.stromtief.de">App</a>
+                <a href="https://github.com/JanST123/stromtief" target="_blank" rel="noopener">GitHub</a>
+                <a href="https://github.com/Akkudoktor-EOS/EOS" target="_blank" rel="noopener">Akkudoktor EOS</a>
+            </div>
+        </footer>
+    </div>
+</body>
+</html>
