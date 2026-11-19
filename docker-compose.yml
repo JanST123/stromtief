@@ -23,8 +23,8 @@ services:
     container_name: eos-smart-charge-ui
     restart: unless-stopped
     ports:
-      # Only the UI is accessible from the outside!
-      - "8505:8505"
+      # Bound to localhost so only Caddy reverse proxy can access it
+      - "127.0.0.1:8505:8505"
     environment:
       - SMART_CHARGE_PORT=8505
       - EOS_API_URL=http://eos:8503
