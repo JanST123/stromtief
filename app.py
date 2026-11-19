@@ -1913,6 +1913,18 @@ HTML_CONTENT = """<!DOCTYPE html>
             </div>
         </div>
 
+        <!-- Ostrom Referral Hint in App -->
+        <div style="margin-top: 24px; background: rgba(245, 158, 11, 0.06); border: 1px solid rgba(245, 158, 11, 0.22); border-radius: 12px; padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; font-size: 0.85rem;">
+            <div style="color: #cbd5e1;">
+                <span style="color: #fbbf24; font-weight: 700;">🎁 Du willst auch zu Ostrom und mir gleichzeitig danken?</span>
+                <span style="color: #94a3b8; margin-left: 6px;">Sichere dir ein Startguthaben mit Code <strong style="color: #fff; font-family: monospace; background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px; user-select: all;">JANS2MXWNE</strong>.</span>
+            </div>
+            <a href="https://join.ostrom.de?referralCode=JANS2MXWNE" target="_blank" rel="noopener" style="color: #f59e0b; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;">
+                <span>Zu Ostrom wechseln</span>
+                <span>→</span>
+            </a>
+        </div>
+
         <!-- App Footer with Legal Links -->
         <footer style="margin-top: 36px; padding: 20px 0 30px; border-top: 1px solid var(--surface-border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 0.8rem; color: var(--text-secondary);">
             <div>⚡️ <strong>stromtief</strong> • Angetrieben von <a href="https://github.com/Akkudoktor-EOS/EOS" target="_blank" rel="noopener" style="color: var(--brand-blue); text-decoration: none;">Akkudoktor EOS</a></div>
@@ -2047,6 +2059,19 @@ HTML_CONTENT = """<!DOCTYPE html>
                     <option value="ElecPriceEnergyCharts:AT">Energy-Charts (AT) — Österreich</option>
                     <option value="ElecPriceSMARD:DE">SMARD.de — Bundesnetzagentur Deutschland</option>
                 </select>
+
+                <!-- Ostrom Referral in Settings Modal -->
+                <div style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 10px; padding: 12px 14px; margin-top: 14px; font-size: 0.82rem; color: #cbd5e1; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                    <div>
+                        <span style="color: #fbbf24; font-weight: 700;">🎁 Du willst zu Ostrom?</span>
+                        <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 2px;">
+                            Sichere dir deinen Bonus mit Code <strong style="color: #fff; font-family: monospace;">JANS2MXWNE</strong> und unterstütze stromtief.
+                        </div>
+                    </div>
+                    <a href="https://join.ostrom.de?referralCode=JANS2MXWNE" target="_blank" rel="noopener" style="background: #f59e0b; color: #000; font-weight: 700; font-size: 0.78rem; padding: 6px 12px; border-radius: 6px; text-decoration: none; white-space: nowrap;">
+                        Zu Ostrom →
+                    </a>
+                </div>
             </div>
 
             <div class="modal-footer">
