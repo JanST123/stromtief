@@ -42,7 +42,7 @@ DEFAULT_SETTINGS = {
     "provider": "ElecPriceEnergyCharts",
     "bidding_zone": "DE-LU",
     "vat_percent": 19.0,
-    "hourly_fees": [15.0] * 24,  # Net fixed fee default: 15 ct/kWh
+    "hourly_fees": [17.0] * 24,  # Net fixed fee default: 17 ct/kWh (e.g. Ostrom Standard)
 }
 
 # In-memory Price Cache to protect EOS from multi-user load spikes
@@ -69,9 +69,9 @@ def load_settings() -> Dict[str, Any]:
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                fees = data.get("hourly_fees", [15.0] * 24)
+                fees = data.get("hourly_fees", [17.0] * 24)
                 if len(fees) != 24:
-                    fees = (fees + [15.0] * 24)[:24]
+                    fees = (fees + [17.0] * 24)[:24]
                 return {
                     "eos_url": data.get("eos_url", DEFAULT_EOS_URL).rstrip("/"),
                     "provider": data.get("provider", "ElecPriceEnergyCharts"),
@@ -223,7 +223,7 @@ class ProviderConfigRequest(BaseModel):
     provider: str = Field(default="ElecPriceEnergyCharts")
     bidding_zone: str = Field(default="DE-LU")
     vat_percent: float = Field(default=19.0, ge=0.0, le=50.0)
-    hourly_fees: List[float] = Field(default_factory=lambda: [15.0] * 24)
+    hourly_fees: List[float] = Field(default_factory=lambda: [17.0] * 24)
 
 
 class CalcRequest(BaseModel):
@@ -379,7 +379,7 @@ def get_prices(eos_url: Optional[str] = None):
     settings = load_settings()
     active_url = (eos_url or settings.get("eos_url", DEFAULT_EOS_URL)).rstrip("/")
     prices = fetch_eos_prices(active_url)
-    fees = settings.get("hourly_fees", [15.0] * 24)
+    fees = settings.get("hourly_fees", [17.0] * 24)
     vat_percent = settings.get("vat_percent", 19.0)
     vat_factor = 1.0 + (vat_percent / 100.0)
 
@@ -1752,7 +1752,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                 </button>
                 <button class="config-btn" onclick="openConfigModal()">
                     <span>⚙️ Mein Tarif & Gebühren</span>
-                    <span class="config-pill" id="headerProviderPill">15 ct + 19% MwSt</span>
+                    <span class="config-pill" id="headerProviderPill">17 ct + 19% MwSt</span>
                 </button>
                 <div class="badge-live" onclick="openConfigModal()" title="EOS Börsendaten Status">
                     <span class="pulse-dot" id="liveDot"></span>
@@ -2006,7 +2006,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
                 <!-- Presets & Bulk input -->
                 <div class="preset-buttons" style="margin-bottom: 4px;">
-                    <button class="chip-btn" onclick="applyFeePreset('ostrom')">🇩🇪 Ostrom Standard (15.0 ct netto)</button>
+                    <button class="chip-btn" onclick="applyFeePreset('ostrom')">🇩🇪 Ostrom Standard (17.0 ct netto)</button>
                     <button class="chip-btn" onclick="applyFeePreset('enwg14a')">⚡️ § 14a EnWG Zeitvariabel (10 / 16 ct)</button>
                     <button class="chip-btn" onclick="applyFeePreset('htnt')">🌙 Tag/Nacht HT/NT (11 / 17 ct)</button>
                     <button class="chip-btn" onclick="applyFeePreset('zero')">🆓 Nur Börsenpreis (0.0 ct)</button>
@@ -2014,7 +2014,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
                 <div class="bulk-set-row">
                     <span style="font-size: 0.8rem; color: #cbd5e1;">Pauschalwert für alle Stunden:</span>
-                    <input type="number" id="bulkFeeInput" class="bulk-input" value="15.0" step="0.1" min="0" max="100">
+                    <input type="number" id="bulkFeeInput" class="bulk-input" value="17.0" step="0.1" min="0" max="100">
                     <span style="font-size: 0.8rem; color: #94a3b8;">ct/kWh</span>
                     <button class="bulk-apply-btn" onclick="applyBulkFee()">Auf alle 24h anwenden</button>
                 </div>
@@ -2171,7 +2171,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             soc_ist: 25.0,
             soc_soll: 80.0,
             vat_percent: 19.0,
-            hourly_fees: Array(24).fill(15.0)
+            hourly_fees: Array(24).fill(17.0)
         };
 
         const tooltipEl = document.getElementById('floatingTooltip');
@@ -2235,7 +2235,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                 s: userSettings.soc_soll,
                 vat: userSettings.vat_percent
             };
-            const fees = userSettings.hourly_fees || Array(24).fill(15.0);
+            const fees = userSettings.hourly_fees || Array(24).fill(17.0);
             const allSame = fees.every(f => f === fees[0]);
             compact.f = allSame ? fees[0] : fees;
 
@@ -2522,7 +2522,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         function openConfigModal() {
             document.getElementById('modalVatInput').value = parseFloat(userSettings.vat_percent).toFixed(1);
 
-            const fees = userSettings.hourly_fees || Array(24).fill(15.0);
+            const fees = userSettings.hourly_fees || Array(24).fill(17.0);
             for (let h = 0; h < 24; h++) {
                 const el = document.getElementById(`fee_${h}`);
                 if (el) el.value = parseFloat(fees[h]).toFixed(1);
@@ -2557,7 +2557,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         function applyFeePreset(preset) {
             if (preset === 'ostrom') {
-                document.getElementById('bulkFeeInput').value = '15.0';
+                document.getElementById('bulkFeeInput').value = '17.0';
                 applyBulkFee();
                 setVatPreset(19.0);
             } else if (preset === 'enwg14a') {
