@@ -6,22 +6,24 @@ A sleek, intuitive web application for electric vehicle owners with dynamic elec
 as a read-only price feed, models hourly grid fees, VAT, battery capacity,
 and calculates the cheapest continuous or split charging windows before your deadline.
 
-Supports Multi-User & Public SaaS operation with client-side LocalStorage and
-server-side Read-Only protection.
+Supports Multi-User & Public SaaS operation with client-side LocalStorage,
+server-side Read-Only protection, and seamless Cross-Device Settings Sync via QR Code & Link.
 """
 
 from datetime import datetime, timedelta
 import json
 import os
+import socket
 import time
 from typing import Any, Dict, List, Optional
 from urllib.request import Request, urlopen
 import urllib.error
 
 import uvicorn
-from fastapi import FastAPI, Header, Query
+from fastapi import FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 # Configuration & Security
@@ -33,6 +35,7 @@ SETTINGS_FILE = os.getenv(
     "SMART_CHARGE_SETTINGS",
     os.path.join(os.path.dirname(__file__), "data", "settings.json"),
 )
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 DEFAULT_SETTINGS = {
     "eos_url": DEFAULT_EOS_URL,
@@ -46,6 +49,18 @@ DEFAULT_SETTINGS = {
 _PRICE_CACHE: Dict[str, float] = {}
 _PRICE_CACHE_TIME: float = 0.0
 CACHE_TTL_SECONDS = 180  # 3 minutes
+
+
+def get_local_ip() -> str:
+    """Detect primary local network IP (for convenient Wi-Fi QR code scanning)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 
 def load_settings() -> Dict[str, Any]:
@@ -84,6 +99,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if os.path.exists(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 def get_active_eos_url() -> str:
@@ -148,7 +166,6 @@ def update_eos_provider(provider: str, bidding_zone: str = "DE-LU", eos_url: Opt
         with urlopen(update_req, timeout=5) as response:
             pass
 
-        # Invalidate price cache
         fetch_eos_prices(force_refresh=True)
         return True
     except Exception as e:
@@ -183,15 +200,18 @@ class CalcRequest(BaseModel):
 
 @app.get("/api/system")
 def get_system_info():
-    """Get system mode, read-only status and EOS connection status."""
+    """Get system mode, read-only status, detected local IP, and EOS connection status."""
     eos_url = get_active_eos_url()
     eos_online = bool(fetch_eos_prices())
+    local_ip = get_local_ip()
     return {
         "status": "ok",
         "read_only": READ_ONLY_MODE,
         "eos_online": eos_online,
         "eos_url": eos_url if not READ_ONLY_MODE else "[Geschützt]",
         "cached_slots": len(_PRICE_CACHE),
+        "local_ip": local_ip,
+        "port": PORT,
     }
 
 
@@ -220,7 +240,7 @@ def test_eos_connection(req: TestEosRequest):
 
 @app.get("/api/config/provider")
 def get_provider_config():
-    """Get current electricity provider, EOS endpoint, VAT, and hourly fees configuration."""
+    """Get default provider, EOS endpoint, VAT, and hourly fees configuration."""
     settings = load_settings()
     available_providers = [
         {
@@ -558,6 +578,8 @@ HTML_CONTENT = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>E-Auto Günstig Laden — Smart Charge Planner</title>
+    <!-- Zero-dependency QR Code Generator -->
+    <script src="/static/qrcode.min.js"></script>
     <style>
         :root {
             --bg: #0b0f17;
@@ -600,6 +622,34 @@ HTML_CONTENT = """<!DOCTYPE html>
             display: flex;
             flex-direction: column;
             gap: 20px;
+        }
+
+        /* Toast notification */
+        #syncToast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-100px);
+            background: #14231e;
+            border: 1px solid var(--brand-green);
+            color: #34d399;
+            padding: 12px 24px;
+            border-radius: 30px;
+            font-size: 0.9rem;
+            font-weight: 700;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+            z-index: 999999;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.4s;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        #syncToast.show {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
         }
 
         /* Header */
@@ -645,7 +695,8 @@ HTML_CONTENT = """<!DOCTYPE html>
         .header-actions {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
+            flex-wrap: wrap;
         }
 
         .config-btn {
@@ -667,6 +718,18 @@ HTML_CONTENT = """<!DOCTYPE html>
             background: var(--surface-hover);
             border-color: #38bdf8;
             color: #38bdf8;
+        }
+
+        .share-btn {
+            border-color: rgba(168, 85, 247, 0.4);
+            color: #d8b4fe;
+            background: rgba(168, 85, 247, 0.1);
+        }
+
+        .share-btn:hover {
+            background: rgba(168, 85, 247, 0.2);
+            border-color: #c084fc;
+            color: #fff;
         }
 
         .config-pill {
@@ -1547,9 +1610,49 @@ HTML_CONTENT = """<!DOCTYPE html>
         .btn-save:hover {
             filter: brightness(1.1);
         }
+
+        /* QR Code Share Modal Specifics */
+        .qr-display-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            padding: 10px 0;
+        }
+
+        .qr-code-box {
+            background: #ffffff;
+            padding: 16px;
+            border-radius: 14px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 230px;
+            height: 230px;
+        }
+
+        .qr-code-box svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .copy-url-row {
+            display: flex;
+            width: 100%;
+            gap: 8px;
+        }
     </style>
 </head>
 <body>
+    <!-- Toast Notification for Sync Success -->
+    <div id="syncToast">
+        <span>🎉</span>
+        <span id="syncToastMsg">Einstellungen erfolgreich übernommen!</span>
+    </div>
+
     <div class="container">
         <!-- Header -->
         <header>
@@ -1561,13 +1664,16 @@ HTML_CONTENT = """<!DOCTYPE html>
                 </div>
             </div>
             <div class="header-actions">
+                <button class="config-btn share-btn" onclick="openShareModal()" title="Einstellungen per QR-Code oder Link auf Smartphone übertragen">
+                    <span>📲 Aufs Handy übertragen</span>
+                </button>
                 <button class="config-btn" onclick="openConfigModal()">
                     <span>⚙️ Mein Tarif & Gebühren</span>
                     <span class="config-pill" id="headerProviderPill">15 ct + 19% MwSt</span>
                 </button>
                 <div class="badge-live" onclick="openConfigModal()" title="EOS Börsendaten Status">
                     <span class="pulse-dot" id="liveDot"></span>
-                    <span id="liveText">EOS Online</span>
+                    <span id="liveText">EOS Börse Aktiv</span>
                 </div>
             </div>
         </header>
@@ -1752,7 +1858,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     <!-- Floating Tooltip for Chart -->
     <div id="floatingTooltip"></div>
 
-    <!-- Modal: Personal Tariff & VAT Configuration (Stored locally in Browser) -->
+    <!-- Modal 1: Personal Tariff & VAT Configuration (Stored locally in Browser) -->
     <div class="modal-overlay" id="configModal" onclick="onModalOverlayClick(event)">
         <div class="modal-box">
             <div class="modal-header">
@@ -1882,6 +1988,48 @@ HTML_CONTENT = """<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- Modal 2: QR-Code & Cross-Device Sync Modal -->
+    <div class="modal-overlay" id="shareModal" onclick="onShareOverlayClick(event)">
+        <div class="modal-box" style="max-width: 480px; text-align: center;">
+            <div class="modal-header">
+                <div class="modal-title">📲 Einstellungen auf Smartphone übertragen</div>
+                <button class="modal-close-btn" onclick="closeShareModal()">✕</button>
+            </div>
+
+            <div class="modal-desc" style="text-align: left;">
+                Scannen Sie diesen QR-Code mit der Kamera Ihres Smartphones, um Ihr Fahrzeug, Ihre Batteriegröße und Ihre individuellen Netzentgelte sofort zu übernehmen:
+            </div>
+
+            <div class="qr-display-container">
+                <div class="qr-code-box" id="qrCodeBox">
+                    <!-- SVG QR Code generated by JS -->
+                </div>
+                <span style="font-size: 0.75rem; color: var(--text-secondary);">100% lokal & privat: Keine Daten werden über externe Server gesendet.</span>
+            </div>
+
+            <!-- Optional Network URL switcher (helpful if on localhost) -->
+            <div id="hostHintContainer" style="display: none; text-align: left; background: rgba(0,0,0,0.25); padding: 10px 12px; border-radius: 8px; font-size: 0.78rem;">
+                <span style="color: #38bdf8; font-weight: 700;">WLAN-Adresse für Smartphone:</span>
+                <div style="display: flex; gap: 6px; margin-top: 6px;">
+                    <input type="text" id="shareHostOverrideInput" class="custom-input" style="padding: 6px 10px; font-size: 0.8rem;" oninput="onShareHostChange()">
+                    <button class="bulk-apply-btn" onclick="resetShareHost()">Standard</button>
+                </div>
+            </div>
+
+            <div class="modal-section" style="text-align: left;">
+                <div style="font-size: 0.8rem; font-weight: 700; color: #fff;">Oder Link kopieren & versenden:</div>
+                <div class="copy-url-row">
+                    <input type="text" id="shareUrlInput" class="custom-input" readonly style="font-size: 0.78rem; color: #94a3b8;" onclick="this.select()">
+                    <button class="bulk-apply-btn" id="btnCopyLink" onclick="copyShareLink()">Kopieren</button>
+                </div>
+            </div>
+
+            <div class="modal-footer" style="justify-content: flex-end;">
+                <button class="btn-cancel" onclick="closeShareModal()">Fertig</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // Storage Keys
         const STORAGE_KEY = 'eos_smart_charge_user_v1';
@@ -1892,6 +2040,8 @@ HTML_CONTENT = """<!DOCTYPE html>
         let chartViewMode = 'stacked'; // 'stacked', 'total', 'spot'
         let cachedPlan = null;
         let isReadOnly = true;
+        let detectedLocalIp = '127.0.0.1';
+        let serverPort = 8505;
 
         // User Settings (Stored in LocalStorage)
         let userSettings = {
@@ -1911,6 +2061,16 @@ HTML_CONTENT = """<!DOCTYPE html>
             'ev3_81': { cap: 81, power: 11.0, ist: 25, soll: 80 },
             'model3': { cap: 60, power: 11.0, ist: 20, soll: 80 }
         };
+
+        function showToast(msg) {
+            const toast = document.getElementById('syncToast');
+            const msgEl = document.getElementById('syncToastMsg');
+            msgEl.textContent = msg;
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 4500);
+        }
 
         function loadUserStorage() {
             try {
@@ -1942,6 +2102,156 @@ HTML_CONTENT = """<!DOCTYPE html>
             if (confirm('Möchten Sie alle Einstellungen (Fahrzeug, Tarife und Gebühren) auf die Standardwerte zurücksetzen?')) {
                 localStorage.removeItem(STORAGE_KEY);
                 location.reload();
+            }
+        }
+
+        // Cross-device Share & QR Code
+        function getEncodedConfig() {
+            const compact = {
+                v: userSettings.vehicle_preset,
+                c: userSettings.battery_cap,
+                p: userSettings.charge_power,
+                i: userSettings.soc_ist,
+                s: userSettings.soc_soll,
+                vat: userSettings.vat_percent
+            };
+            const fees = userSettings.hourly_fees || Array(24).fill(15.0);
+            const allSame = fees.every(f => f === fees[0]);
+            compact.f = allSame ? fees[0] : fees;
+
+            try {
+                const jsonStr = JSON.stringify(compact);
+                return encodeURIComponent(btoa(unescape(encodeURIComponent(jsonStr))));
+            } catch (e) {
+                console.error('Encoding error', e);
+                return '';
+            }
+        }
+
+        function decodeConfig(encodedStr) {
+            try {
+                const jsonStr = decodeURIComponent(escape(atob(decodeURIComponent(encodedStr))));
+                const c = JSON.parse(jsonStr);
+                if (!c) return null;
+
+                const fees = Array.isArray(c.f) ? c.f : Array(24).fill(typeof c.f === 'number' ? c.f : 15.0);
+
+                return {
+                    vehicle_preset: c.v || 'ev3_53',
+                    battery_cap: parseFloat(c.c) || 53.0,
+                    charge_power: parseFloat(c.p) || 11.0,
+                    soc_ist: parseFloat(c.i) || 25.0,
+                    soc_soll: parseFloat(c.s) || 80.0,
+                    vat_percent: parseFloat(c.vat !== undefined ? c.vat : 19.0),
+                    hourly_fees: fees
+                };
+            } catch (e) {
+                console.error('Decoding error', e);
+                return null;
+            }
+        }
+
+        function checkIncomingSync() {
+            const hash = window.location.hash;
+            if (hash && (hash.startsWith('#cfg=') || hash.startsWith('#config='))) {
+                const encoded = hash.split('=')[1];
+                const imported = decodeConfig(encoded);
+                if (imported) {
+                    userSettings = Object.assign({}, userSettings, imported);
+                    saveUserStorage();
+                    // Clean URL hash without reloading
+                    history.replaceState(null, '', window.location.pathname + window.location.search);
+                    showToast('🎉 Einstellungen erfolgreich auf dieses Gerät übertragen!');
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function getBaseShareUrl() {
+            const override = document.getElementById('shareHostOverrideInput')?.value.trim();
+            if (override) return override.replace(/\\/+$/, '');
+
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            if (isLocal && detectedLocalIp && detectedLocalIp !== '127.0.0.1') {
+                return `http://${detectedLocalIp}:${serverPort}`;
+            }
+            return window.location.origin;
+        }
+
+        function openShareModal() {
+            // Check if on localhost to provide Wi-Fi IP tip
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            const hintBox = document.getElementById('hostHintContainer');
+            if (isLocal && detectedLocalIp && detectedLocalIp !== '127.0.0.1') {
+                hintBox.style.display = 'block';
+                document.getElementById('shareHostOverrideInput').value = `http://${detectedLocalIp}:${serverPort}`;
+            } else {
+                hintBox.style.display = 'none';
+            }
+
+            renderShareQr();
+            document.getElementById('shareModal').classList.add('active');
+        }
+
+        function closeShareModal() {
+            document.getElementById('shareModal').classList.remove('active');
+        }
+
+        function onShareOverlayClick(e) {
+            if (e.target.id === 'shareModal') closeShareModal();
+        }
+
+        function renderShareQr() {
+            const base = getBaseShareUrl();
+            const fullUrl = `${base}/#cfg=${getEncodedConfig()}`;
+            document.getElementById('shareUrlInput').value = fullUrl;
+
+            const qrBox = document.getElementById('qrCodeBox');
+            qrBox.innerHTML = '';
+
+            try {
+                if (typeof qrcode !== 'undefined') {
+                    const qr = qrcode(0, 'M');
+                    qr.addData(fullUrl);
+                    qr.make();
+                    // Create responsive SVG tag
+                    qrBox.innerHTML = qr.createSvgTag(5, 2);
+                } else {
+                    qrBox.innerHTML = '<span style="color:#64748b; font-size:0.8rem;">QR-Code Generator lädt...</span>';
+                }
+            } catch (err) {
+                console.error(err);
+                qrBox.innerHTML = '<span style="color:#ef4444; font-size:0.8rem;">Fehler beim Erzeugen des QR-Codes</span>';
+            }
+        }
+
+        function onShareHostChange() {
+            renderShareQr();
+        }
+
+        function resetShareHost() {
+            document.getElementById('shareHostOverrideInput').value = `http://${detectedLocalIp}:${serverPort}`;
+            renderShareQr();
+        }
+
+        async function copyShareLink() {
+            const input = document.getElementById('shareUrlInput');
+            input.select();
+            input.setSelectionRange(0, 99999);
+            try {
+                await navigator.clipboard.writeText(input.value);
+                const btn = document.getElementById('btnCopyLink');
+                btn.textContent = 'Kopiert! ✓';
+                btn.style.background = '#10b981';
+                btn.style.color = '#fff';
+                setTimeout(() => {
+                    btn.textContent = 'Kopieren';
+                    btn.style.background = '';
+                    btn.style.color = '';
+                }, 2000);
+            } catch (e) {
+                alert('Link im Feld kopieren: ' + input.value);
             }
         }
 
@@ -2099,9 +2409,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             }
             document.getElementById('bulkFeeInput').value = parseFloat(fees[0] || 15.0).toFixed(1);
 
-            // Show admin section only if not in read-only mode
             document.getElementById('adminEosSection').style.display = isReadOnly ? 'none' : 'block';
-
             document.getElementById('configModal').classList.add('active');
         }
 
@@ -2444,9 +2752,13 @@ HTML_CONTENT = """<!DOCTYPE html>
             }
         }, { passive: false });
 
-        // Initialize on page load with LocalStorage restoration
+        // Initialize on page load with LocalStorage restoration & sync check
         window.addEventListener('DOMContentLoaded', async () => {
-            loadUserStorage();
+            // First check if user arrived via a share link (#cfg=...)
+            const synced = checkIncomingSync();
+            if (!synced) {
+                loadUserStorage();
+            }
 
             // Restore vehicle inputs
             document.getElementById('batteryCap').value = userSettings.battery_cap;
@@ -2461,7 +2773,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             document.getElementById('socSoll').value = userSettings.soc_soll;
             updateVal('socSollVal', userSettings.soc_soll + '%');
 
-            // Restore preset button styling
             if (userSettings.vehicle_preset) {
                 document.querySelectorAll('.form-group .preset-buttons .chip-btn').forEach(b => b.classList.remove('active'));
                 if (userSettings.vehicle_preset === 'ev3_53') document.getElementById('btnPresetEV3_53')?.classList.add('active');
@@ -2471,12 +2782,14 @@ HTML_CONTENT = """<!DOCTYPE html>
 
             updateHeaderPill();
 
-            // Check system read-only status
+            // Fetch system info to detect read-only status and local Wi-Fi IP
             try {
                 const sysRes = await fetch('/api/system');
                 if (sysRes.ok) {
                     const sys = await sysRes.json();
                     isReadOnly = sys.read_only;
+                    detectedLocalIp = sys.local_ip || '127.0.0.1';
+                    serverPort = sys.port || 8505;
                     setLiveStatus(sys.eos_online);
                 }
             } catch (e) {
