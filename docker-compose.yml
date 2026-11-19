@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  smart-charge-ui:
+    build: .
+    container_name: eos-smart-charge-ui
+    restart: unless-stopped
+    ports:
+      - "8505:8505"
+    environment:
+      - SMART_CHARGE_PORT=8505
+      # Set to your EOS server address (e.g. http://host.docker.internal:8503 or http://192.168.178.50:8503)
+      - EOS_API_URL=http://host.docker.internal:8503
+    volumes:
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
