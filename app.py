@@ -3,23 +3,30 @@
 
 A sleek, intuitive web application for electric vehicle owners with dynamic electricity tariffs
 (e.g., Ostrom SimplyDynamic, Tibber, EPEX Spot). Communicates with Akkudoktor EOS API
-to fetch spot market electricity prices, models hourly grid fees, VAT, battery capacity,
+as a read-only price feed, models hourly grid fees, VAT, battery capacity,
 and calculates the cheapest continuous or split charging windows before your deadline.
+
+Supports Multi-User & Public SaaS operation with client-side LocalStorage and
+server-side Read-Only protection.
 """
 
 from datetime import datetime, timedelta
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 from urllib.request import Request, urlopen
 import urllib.error
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+# Configuration & Security
+READ_ONLY_MODE = os.getenv("READ_ONLY_MODE", "true").lower() in ("true", "1", "yes")
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 DEFAULT_EOS_URL = os.getenv("EOS_API_URL", "http://127.0.0.1:8503").rstrip("/")
 PORT = int(os.getenv("SMART_CHARGE_PORT", "8505"))
 SETTINGS_FILE = os.getenv(
@@ -32,8 +39,13 @@ DEFAULT_SETTINGS = {
     "provider": "ElecPriceEnergyCharts",
     "bidding_zone": "DE-LU",
     "vat_percent": 19.0,
-    "hourly_fees": [17.0] * 24,  # Net fixed fee default: 17 ct/kWh
+    "hourly_fees": [15.0] * 24,  # Net fixed fee default: 15 ct/kWh
 }
+
+# In-memory Price Cache to protect EOS from multi-user load spikes
+_PRICE_CACHE: Dict[str, float] = {}
+_PRICE_CACHE_TIME: float = 0.0
+CACHE_TTL_SECONDS = 180  # 3 minutes
 
 
 def load_settings() -> Dict[str, Any]:
@@ -42,9 +54,9 @@ def load_settings() -> Dict[str, Any]:
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                fees = data.get("hourly_fees", [17.0] * 24)
+                fees = data.get("hourly_fees", [15.0] * 24)
                 if len(fees) != 24:
-                    fees = (fees + [17.0] * 24)[:24]
+                    fees = (fees + [15.0] * 24)[:24]
                 return {
                     "eos_url": data.get("eos_url", DEFAULT_EOS_URL).rstrip("/"),
                     "provider": data.get("provider", "ElecPriceEnergyCharts"),
@@ -80,22 +92,35 @@ def get_active_eos_url() -> str:
     return settings.get("eos_url", DEFAULT_EOS_URL).rstrip("/")
 
 
-def fetch_eos_prices(eos_url: Optional[str] = None) -> Dict[str, float]:
-    """Fetch current price predictions from configured EOS API."""
+def fetch_eos_prices(eos_url: Optional[str] = None, force_refresh: bool = False) -> Dict[str, float]:
+    """Fetch current price predictions with in-memory caching."""
+    global _PRICE_CACHE, _PRICE_CACHE_TIME
+    now = time.time()
+
+    if not force_refresh and _PRICE_CACHE and (now - _PRICE_CACHE_TIME < CACHE_TTL_SECONDS):
+        return _PRICE_CACHE
+
     base_url = (eos_url or get_active_eos_url()).rstrip("/")
     url = f"{base_url}/v1/prediction/series?key=elecprice_marketprice_wh"
     req = Request(url, headers={"User-Agent": "SmartChargePlanner/1.0"})
     try:
         with urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode("utf-8"))
-            return data.get("data", {})
+            prices = data.get("data", {})
+            if prices:
+                _PRICE_CACHE = prices
+                _PRICE_CACHE_TIME = now
+            return prices
     except Exception as e:
         print(f"[Warning] Failed to fetch prices from EOS ({url}): {e}")
-        return {}
+        return _PRICE_CACHE if _PRICE_CACHE else {}
 
 
 def update_eos_provider(provider: str, bidding_zone: str = "DE-LU", eos_url: Optional[str] = None) -> bool:
     """Update EOS config with new electricity price provider."""
+    if READ_ONLY_MODE:
+        return False
+
     base_url = (eos_url or get_active_eos_url()).rstrip("/")
     try:
         config_body: Dict[str, Any] = {"elecprice": {"provider": provider}}
@@ -123,6 +148,8 @@ def update_eos_provider(provider: str, bidding_zone: str = "DE-LU", eos_url: Opt
         with urlopen(update_req, timeout=5) as response:
             pass
 
+        # Invalidate price cache
+        fetch_eos_prices(force_refresh=True)
         return True
     except Exception as e:
         print(f"[Warning] Failed to update EOS provider on {base_url}: {e}")
@@ -138,7 +165,7 @@ class ProviderConfigRequest(BaseModel):
     provider: str = Field(default="ElecPriceEnergyCharts")
     bidding_zone: str = Field(default="DE-LU")
     vat_percent: float = Field(default=19.0, ge=0.0, le=50.0)
-    hourly_fees: List[float] = Field(default_factory=lambda: [17.0] * 24)
+    hourly_fees: List[float] = Field(default_factory=lambda: [15.0] * 24)
 
 
 class CalcRequest(BaseModel):
@@ -149,17 +176,36 @@ class CalcRequest(BaseModel):
     efficiency_percent: float = Field(default=90.0, ge=70.0, le=100.0)
     deadline_iso: Optional[str] = None
     strategy: str = Field(default="continuous")  # 'continuous' or 'split'
-    vat_percent: Optional[float] = None
+    vat_percent: Optional[float] = Field(default=19.0)
     hourly_fees: Optional[List[float]] = None
     eos_url: Optional[str] = None
+
+
+@app.get("/api/system")
+def get_system_info():
+    """Get system mode, read-only status and EOS connection status."""
+    eos_url = get_active_eos_url()
+    eos_online = bool(fetch_eos_prices())
+    return {
+        "status": "ok",
+        "read_only": READ_ONLY_MODE,
+        "eos_online": eos_online,
+        "eos_url": eos_url if not READ_ONLY_MODE else "[Geschützt]",
+        "cached_slots": len(_PRICE_CACHE),
+    }
 
 
 @app.post("/api/eos/test")
 def test_eos_connection(req: TestEosRequest):
     """Test connection to a specified EOS server endpoint."""
+    if READ_ONLY_MODE:
+        return JSONResponse(
+            status_code=403,
+            content={"ok": False, "error": "Server läuft im sicheren Read-Only-Modus. EOS-Endpunkt ist fest konfiguriert."},
+        )
+
     url = req.eos_url.rstrip("/")
     try:
-        # Check health or config
         check_url = f"{url}/v1/config"
         test_req = Request(check_url, headers={"User-Agent": "SmartChargePlanner/1.0"})
         with urlopen(test_req, timeout=4) as response:
@@ -198,14 +244,25 @@ def get_provider_config():
     ]
     return {
         "status": "ok",
+        "read_only": READ_ONLY_MODE,
         "settings": settings,
         "available_providers": available_providers,
     }
 
 
 @app.post("/api/config/provider")
-def set_provider_config(req: ProviderConfigRequest):
+def set_provider_config(req: ProviderConfigRequest, x_admin_token: Optional[str] = Header(None)):
     """Save provider, EOS endpoint, VAT, and 24h hourly fee configuration."""
+    if READ_ONLY_MODE:
+        if not ADMIN_TOKEN or x_admin_token != ADMIN_TOKEN:
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "error": "Der Server läuft im sicheren Read-Only-Modus. Ihre Tarifeinstellungen wurden automatisch in Ihrem Browser (LocalStorage) gespeichert.",
+                    "read_only": True,
+                },
+            )
+
     current = load_settings()
     new_eos_url = (req.eos_url or current.get("eos_url", DEFAULT_EOS_URL)).rstrip("/")
 
@@ -217,7 +274,7 @@ def set_provider_config(req: ProviderConfigRequest):
 
     fees = [float(x) for x in req.hourly_fees]
     if len(fees) != 24:
-        fees = (fees + [17.0] * 24)[:24]
+        fees = (fees + [15.0] * 24)[:24]
 
     new_settings = {
         "eos_url": new_eos_url,
@@ -229,7 +286,7 @@ def set_provider_config(req: ProviderConfigRequest):
     save_settings(new_settings)
 
     eos_updated = False
-    if provider_changed:
+    if provider_changed and not READ_ONLY_MODE:
         eos_updated = update_eos_provider(req.provider, req.bidding_zone, eos_url=new_eos_url)
 
     return {
@@ -245,7 +302,7 @@ def get_prices(eos_url: Optional[str] = None):
     settings = load_settings()
     active_url = (eos_url or settings.get("eos_url", DEFAULT_EOS_URL)).rstrip("/")
     prices = fetch_eos_prices(active_url)
-    fees = settings.get("hourly_fees", [17.0] * 24)
+    fees = settings.get("hourly_fees", [15.0] * 24)
     vat_percent = settings.get("vat_percent", 19.0)
     vat_factor = 1.0 + (vat_percent / 100.0)
 
@@ -274,11 +331,12 @@ def get_prices(eos_url: Optional[str] = None):
                 "vat_percent": vat_percent,
             }
         )
-    return {"count": len(items), "prices": items, "eos_url": active_url}
+    return {"count": len(items), "prices": items}
 
 
 @app.post("/api/plan")
 def calculate_plan(req: CalcRequest):
+    """Calculate charging plan purely in memory using cached spot market prices."""
     settings = load_settings()
     active_eos_url = (req.eos_url or settings.get("eos_url", DEFAULT_EOS_URL)).rstrip("/")
     prices_raw = fetch_eos_prices(active_eos_url)
@@ -286,10 +344,11 @@ def calculate_plan(req: CalcRequest):
         return JSONResponse(
             status_code=503,
             content={
-                "error": f"Keine Strompreisdaten von der EOS-API ({active_eos_url}) verfügbar. Prüfen Sie die EOS-Adresse in den Einstellungen."
+                "error": "Keine Strompreisdaten von der EOS-API verfügbar. Bitte prüfen Sie die Verbindung des Servers zu EOS."
             },
         )
 
+    # Use user-supplied hourly fees & VAT (from LocalStorage) with server fallback
     fees = req.hourly_fees if req.hourly_fees and len(req.hourly_fees) == 24 else settings["hourly_fees"]
     vat_percent = req.vat_percent if req.vat_percent is not None else settings.get("vat_percent", 19.0)
     vat_factor = 1.0 + (vat_percent / 100.0)
@@ -1277,6 +1336,19 @@ HTML_CONTENT = """<!DOCTYPE html>
             color: #ffffff;
         }
 
+        .privacy-callout {
+            background: rgba(16, 185, 129, 0.08);
+            border: 1px solid rgba(16, 185, 129, 0.25);
+            padding: 10px 14px;
+            border-radius: var(--radius-md);
+            font-size: 0.8rem;
+            color: #34d399;
+            line-height: 1.4;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
         .modal-section {
             display: flex;
             flex-direction: column;
@@ -1422,10 +1494,26 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         .modal-footer {
             display: flex;
-            justify-content: flex-end;
-            gap: 10px;
+            justify-content: space-between;
+            align-items: center;
             border-top: 1px solid var(--surface-border);
             padding-top: 16px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .btn-reset {
+            background: transparent;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #f87171;
+            padding: 8px 14px;
+            border-radius: 8px;
+            font-size: 0.82rem;
+            cursor: pointer;
+        }
+
+        .btn-reset:hover {
+            background: rgba(239, 68, 68, 0.15);
         }
 
         .btn-cancel {
@@ -1474,10 +1562,10 @@ HTML_CONTENT = """<!DOCTYPE html>
             </div>
             <div class="header-actions">
                 <button class="config-btn" onclick="openConfigModal()">
-                    <span>⚙️ EOS & Tarif-Einstellungen</span>
-                    <span class="config-pill" id="headerProviderPill">Energy-Charts · 17 ct + 19%</span>
+                    <span>⚙️ Mein Tarif & Gebühren</span>
+                    <span class="config-pill" id="headerProviderPill">15 ct + 19% MwSt</span>
                 </button>
-                <div class="badge-live" onclick="openConfigModal()" title="Klicken für EOS Server-Einstellungen">
+                <div class="badge-live" onclick="openConfigModal()" title="EOS Börsendaten Status">
                     <span class="pulse-dot" id="liveDot"></span>
                     <span id="liveText">EOS Online</span>
                 </div>
@@ -1496,9 +1584,9 @@ HTML_CONTENT = """<!DOCTYPE html>
                 <div class="form-group">
                     <div class="form-label">Fahrzeug Preset</div>
                     <div class="preset-buttons">
-                        <button class="chip-btn active" onclick="applyPreset('ev3_53', this)">Kia EV3 (53 kWh)</button>
-                        <button class="chip-btn" onclick="applyPreset('ev3_81', this)">Kia EV3 Long Range (81 kWh)</button>
-                        <button class="chip-btn" onclick="applyPreset('model3', this)">Tesla Model 3 SR (60 kWh)</button>
+                        <button class="chip-btn active" id="btnPresetEV3_53" onclick="applyPreset('ev3_53', this)">Kia EV3 (53 kWh)</button>
+                        <button class="chip-btn" id="btnPresetEV3_81" onclick="applyPreset('ev3_81', this)">Kia EV3 Long Range (81 kWh)</button>
+                        <button class="chip-btn" id="btnPresetModel3" onclick="applyPreset('model3', this)">Tesla Model 3 SR (60 kWh)</button>
                     </div>
                 </div>
 
@@ -1508,7 +1596,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                         <span>Batterie-Nettokapazität</span>
                         <span class="val-badge" id="capVal">53 kWh</span>
                     </div>
-                    <input type="range" id="batteryCap" min="20" max="120" step="1" value="53" oninput="updateVal('capVal', this.value + ' kWh'); triggerRecalc();">
+                    <input type="range" id="batteryCap" min="20" max="120" step="1" value="53" oninput="updateVal('capVal', this.value + ' kWh'); persistAndRecalc();">
                 </div>
 
                 <!-- SoC Sliders -->
@@ -1554,7 +1642,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                             <span>Wallbox Ladeleistung</span>
                             <span class="val-badge" id="powerVal">11 kW</span>
                         </div>
-                        <input type="range" id="chargePower" min="3.7" max="22" step="0.1" value="11" oninput="updateVal('powerVal', parseFloat(this.value).toFixed(1) + ' kW'); triggerRecalc();">
+                        <input type="range" id="chargePower" min="3.7" max="22" step="0.1" value="11" oninput="updateVal('powerVal', parseFloat(this.value).toFixed(1) + ' kW'); persistAndRecalc();">
                     </div>
 
                     <div class="form-group">
@@ -1664,45 +1752,22 @@ HTML_CONTENT = """<!DOCTYPE html>
     <!-- Floating Tooltip for Chart -->
     <div id="floatingTooltip"></div>
 
-    <!-- Modal: EOS Endpoint, Provider, VAT & 24h Hourly Fees Configuration -->
+    <!-- Modal: Personal Tariff & VAT Configuration (Stored locally in Browser) -->
     <div class="modal-overlay" id="configModal" onclick="onModalOverlayClick(event)">
         <div class="modal-box">
             <div class="modal-header">
-                <div class="modal-title">⚙️ EOS & Tarif-Konfiguration</div>
+                <div class="modal-title">⚙️ Tarif & Netzentgelte</div>
                 <button class="modal-close-btn" onclick="closeConfigModal()">✕</button>
             </div>
 
-            <!-- Section 1: EOS API URL -->
-            <div class="modal-section">
-                <div class="modal-sec-title">1. 🔌 EOS Server-Endpunkt (API)</div>
-                <div class="modal-desc">
-                    Tragen Sie die Adresse Ihres laufenden Akkudoktor EOS Servers ein (z. B. lokal <code>http://127.0.0.1:8503</code> oder die IP Ihres Raspberry Pi / Home Assistant wie <code>http://192.168.178.50:8503</code>).
-                </div>
-                <div style="display: flex; gap: 8px; align-items: center;">
-                    <input type="text" id="modalEosUrlInput" class="custom-input" style="flex: 1;" placeholder="http://127.0.0.1:8503">
-                    <button type="button" class="bulk-apply-btn" onclick="testEosConnection()">Verbindung prüfen</button>
-                </div>
-                <div id="eosConnStatus" style="font-size: 0.8rem; display: none; margin-top: 4px; padding: 6px 10px; border-radius: 6px;"></div>
+            <div class="privacy-callout">
+                <span>🔒</span>
+                <span><strong>Privat & Sicher:</strong> Ihre individuellen Tarifeinstellungen werden direkt in Ihrem Browser (LocalStorage) gespeichert. Keine Registrierung und keine Daten auf dem Server.</span>
             </div>
 
-            <!-- Section 2: Spot Price Source -->
+            <!-- Section 1: Mehrwertsteuer (VAT) -->
             <div class="modal-section">
-                <div class="modal-sec-title">2. Spotmarkt-Preisquelle (Börsenstrom)</div>
-                <div class="modal-desc">
-                    Wählen Sie die Quelle für die Day-Ahead-Börsenpreise (EPEX Spot). Für Ostrom, Tibber und die meisten dynamischen Tarife in Deutschland ist <strong>Energy-Charts (DE-LU)</strong> ideal.
-                </div>
-                <select id="modalProviderSelect" class="custom-select">
-                    <option value="ElecPriceEnergyCharts:DE-LU">Energy-Charts (DE-LU) — Deutschland & Luxemburg (Ostrom, Tibber, EPEX Spot)</option>
-                    <option value="ElecPriceEnergyCharts:AT">Energy-Charts (AT) — Österreich</option>
-                    <option value="ElecPriceEnergyCharts:CH">Energy-Charts (CH) — Schweiz</option>
-                    <option value="ElecPriceSMARD:DE">SMARD.de — Bundesnetzagentur Deutschland (Offiziell)</option>
-                    <option value="ElecPriceAkkudoktor:DE">Akkudoktor Community Server</option>
-                </select>
-            </div>
-
-            <!-- Section 3: Mehrwertsteuer (VAT) -->
-            <div class="modal-section">
-                <div class="modal-sec-title">3. Mehrwertsteuer (MwSt. / USt.)</div>
+                <div class="modal-sec-title">1. Mehrwertsteuer (MwSt. / USt.)</div>
                 <div class="modal-desc">
                     Börsenpreise und regulierte Netzentgelte verstehen sich üblicherweise netto. Die Mehrwertsteuer wird auf den <strong>Gesamtpreis (Spotmarkt + fixe Gebühren)</strong> aufgeschlagen.
                 </div>
@@ -1719,11 +1784,11 @@ HTML_CONTENT = """<!DOCTYPE html>
                 </div>
             </div>
 
-            <!-- Section 4: 24h Hourly Fixed Fees (Netto) -->
+            <!-- Section 2: 24h Hourly Fixed Fees (Netto) -->
             <div class="modal-section">
-                <div class="modal-sec-title">4. Fixe Gebühren & Netzentgelte je Stunde (0-23 Uhr, netto)</div>
+                <div class="modal-sec-title">2. Fixe Gebühren & Netzentgelte je Stunde (0-23 Uhr, netto)</div>
                 <div class="modal-desc">
-                    Geben Sie hier Ihre festen Abgaben, Netzentgelte, Steuern und Anbieteraufschläge in <strong>ct/kWh (netto)</strong> für jede Stunde des Tages (00:00 bis 23:00) ein. Sie können eine pauschale Gebühr für alle Stunden setzen oder tageszeitvariable Netzentgelte (§ 14a EnWG) festlegen.
+                    Geben Sie hier Ihre festen Abgaben, Netzentgelte, Steuern und Anbieteraufschläge in <strong>ct/kWh (netto)</strong> für jede Stunde des Tages (00:00 bis 23:00) ein.
                 </div>
 
                 <!-- Presets & Bulk input -->
@@ -1789,23 +1854,52 @@ HTML_CONTENT = """<!DOCTYPE html>
                 </div>
             </div>
 
+            <!-- Section 3: EOS Server Admin (Only visible in Self-Hosted / Admin mode) -->
+            <div class="modal-section" id="adminEosSection" style="display: none; border-top: 1px dashed var(--surface-border); padding-top: 14px;">
+                <div class="modal-sec-title">🛠 EOS Server Administration (Admin-Modus)</div>
+                <div class="modal-desc">
+                    Zentrale EOS-Adresse und Börsen-Provider (nur für Administratoren der Server-Instanz).
+                </div>
+                <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+                    <input type="text" id="modalEosUrlInput" class="custom-input" style="flex: 1;" placeholder="http://127.0.0.1:8503">
+                    <button type="button" class="bulk-apply-btn" onclick="testEosConnection()">Verbindung prüfen</button>
+                </div>
+                <div id="eosConnStatus" style="font-size: 0.8rem; display: none; margin-bottom: 8px; padding: 6px 10px; border-radius: 6px;"></div>
+                <select id="modalProviderSelect" class="custom-select">
+                    <option value="ElecPriceEnergyCharts:DE-LU">Energy-Charts (DE-LU) — Deutschland & Luxemburg</option>
+                    <option value="ElecPriceEnergyCharts:AT">Energy-Charts (AT) — Österreich</option>
+                    <option value="ElecPriceSMARD:DE">SMARD.de — Bundesnetzagentur Deutschland</option>
+                </select>
+            </div>
+
             <div class="modal-footer">
-                <button class="btn-cancel" onclick="closeConfigModal()">Abbrechen</button>
-                <button class="btn-save" onclick="saveProviderConfig()">💾 Speichern & Anwenden</button>
+                <button class="btn-reset" onclick="resetUserStorage()">Standardwerte wiederherstellen</button>
+                <div style="display: flex; gap: 10px;">
+                    <button class="btn-cancel" onclick="closeConfigModal()">Schließen</button>
+                    <button class="btn-save" onclick="savePersonalConfig()">💾 In diesem Browser speichern</button>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
+        // Storage Keys
+        const STORAGE_KEY = 'eos_smart_charge_user_v1';
+
         // App State
         let currentStrategy = 'continuous';
         let currentDeadlineIso = null;
         let chartViewMode = 'stacked'; // 'stacked', 'total', 'spot'
         let cachedPlan = null;
-        let providerSettings = {
-            eos_url: 'http://127.0.0.1:8503',
-            provider: 'ElecPriceEnergyCharts',
-            bidding_zone: 'DE-LU',
+        let isReadOnly = true;
+
+        // User Settings (Stored in LocalStorage)
+        let userSettings = {
+            vehicle_preset: 'ev3_53',
+            battery_cap: 53.0,
+            charge_power: 11.0,
+            soc_ist: 25.0,
+            soc_soll: 80.0,
             vat_percent: 19.0,
             hourly_fees: Array(24).fill(15.0)
         };
@@ -1818,6 +1912,39 @@ HTML_CONTENT = """<!DOCTYPE html>
             'model3': { cap: 60, power: 11.0, ist: 20, soll: 80 }
         };
 
+        function loadUserStorage() {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (raw) {
+                    const parsed = jsonParseSafe(raw);
+                    if (parsed) {
+                        userSettings = Object.assign({}, userSettings, parsed);
+                    }
+                }
+            } catch (e) {
+                console.warn('LocalStorage nicht verfügbar', e);
+            }
+        }
+
+        function saveUserStorage() {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(userSettings));
+            } catch (e) {
+                console.warn('LocalStorage Speicherfehler', e);
+            }
+        }
+
+        function jsonParseSafe(str) {
+            try { return JSON.parse(str); } catch (_) { return null; }
+        }
+
+        function resetUserStorage() {
+            if (confirm('Möchten Sie alle Einstellungen (Fahrzeug, Tarife und Gebühren) auf die Standardwerte zurücksetzen?')) {
+                localStorage.removeItem(STORAGE_KEY);
+                location.reload();
+            }
+        }
+
         function updateVal(id, text) {
             document.getElementById(id).textContent = text;
         }
@@ -1828,6 +1955,12 @@ HTML_CONTENT = """<!DOCTYPE html>
 
             const p = PRESETS[name];
             if (!p) return;
+
+            userSettings.vehicle_preset = name;
+            userSettings.battery_cap = p.cap;
+            userSettings.charge_power = p.power;
+            userSettings.soc_ist = p.ist;
+            userSettings.soc_soll = p.soll;
 
             document.getElementById('batteryCap').value = p.cap;
             updateVal('capVal', p.cap + ' kWh');
@@ -1841,27 +1974,31 @@ HTML_CONTENT = """<!DOCTYPE html>
             document.getElementById('socSoll').value = p.soll;
             updateVal('socSollVal', p.soll + '%');
 
-            triggerRecalc();
+            persistAndRecalc();
         }
 
         function onIstChange(val) {
             updateVal('socIstVal', val + '%');
+            userSettings.soc_ist = parseFloat(val);
             const sollEl = document.getElementById('socSoll');
             if (parseInt(val) >= parseInt(sollEl.value)) {
                 sollEl.value = Math.min(100, parseInt(val) + 5);
                 updateVal('socSollVal', sollEl.value + '%');
+                userSettings.soc_soll = parseFloat(sollEl.value);
             }
-            triggerRecalc();
+            persistAndRecalc();
         }
 
         function onSollChange(val) {
             updateVal('socSollVal', val + '%');
+            userSettings.soc_soll = parseFloat(val);
             const istEl = document.getElementById('socIst');
             if (parseInt(val) <= parseInt(istEl.value)) {
                 istEl.value = Math.max(0, parseInt(val) - 5);
                 updateVal('socIstVal', istEl.value + '%');
+                userSettings.soc_ist = parseFloat(istEl.value);
             }
-            triggerRecalc();
+            persistAndRecalc();
         }
 
         function setStrategy(strat) {
@@ -1953,30 +2090,18 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         // Configuration Modal
         function openConfigModal() {
-            document.getElementById('modalEosUrlInput').value = providerSettings.eos_url || 'http://127.0.0.1:8503';
+            document.getElementById('modalVatInput').value = parseFloat(userSettings.vat_percent).toFixed(1);
 
-            const sel = document.getElementById('modalProviderSelect');
-            const key = `${providerSettings.provider}:${providerSettings.bidding_zone || 'DE-LU'}`;
-            let matched = false;
-            for (let opt of sel.options) {
-                if (opt.value === key || opt.value.startsWith(providerSettings.provider + ':')) {
-                    opt.selected = true;
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched && sel.options.length > 0) sel.selectedIndex = 0;
-
-            document.getElementById('modalVatInput').value = parseFloat(providerSettings.vat_percent !== undefined ? providerSettings.vat_percent : 19.0).toFixed(1);
-
-            const fees = providerSettings.hourly_fees || Array(24).fill(15.0);
+            const fees = userSettings.hourly_fees || Array(24).fill(15.0);
             for (let h = 0; h < 24; h++) {
                 const el = document.getElementById(`fee_${h}`);
                 if (el) el.value = parseFloat(fees[h]).toFixed(1);
             }
             document.getElementById('bulkFeeInput').value = parseFloat(fees[0] || 15.0).toFixed(1);
 
-            document.getElementById('eosConnStatus').style.display = 'none';
+            // Show admin section only if not in read-only mode
+            document.getElementById('adminEosSection').style.display = isReadOnly ? 'none' : 'block';
+
             document.getElementById('configModal').classList.add('active');
         }
 
@@ -1987,54 +2112,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         function onModalOverlayClick(e) {
             if (e.target.id === 'configModal') {
                 closeConfigModal();
-            }
-        }
-
-        async function testEosConnection() {
-            const url = document.getElementById('modalEosUrlInput').value.trim();
-            const statusEl = document.getElementById('eosConnStatus');
-            statusEl.style.display = 'block';
-            statusEl.style.background = 'rgba(56, 189, 248, 0.15)';
-            statusEl.style.color = '#38bdf8';
-            statusEl.textContent = 'Verbindung wird geprüft...';
-
-            try {
-                const res = await fetch('/api/eos/test', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ eos_url: url })
-                });
-                const data = await res.json();
-                if (data.ok) {
-                    statusEl.style.background = 'rgba(16, 185, 129, 0.15)';
-                    statusEl.style.color = '#34d399';
-                    statusEl.textContent = `✅ ${data.message || 'EOS Server erfolgreich erreicht!'}`;
-                    setLiveStatus(true);
-                } else {
-                    statusEl.style.background = 'rgba(239, 68, 68, 0.2)';
-                    statusEl.style.color = '#fca5a5';
-                    statusEl.textContent = `❌ Verbindung fehlgeschlagen: ${data.error || 'Server antwortet nicht'}`;
-                    setLiveStatus(false);
-                }
-            } catch (err) {
-                statusEl.style.background = 'rgba(239, 68, 68, 0.2)';
-                statusEl.style.color = '#fca5a5';
-                statusEl.textContent = `❌ Fehler: ${err.message}`;
-                setLiveStatus(false);
-            }
-        }
-
-        function setLiveStatus(isOnline) {
-            const dot = document.getElementById('liveDot');
-            const txt = document.getElementById('liveText');
-            if (isOnline) {
-                dot.className = 'pulse-dot';
-                txt.textContent = 'EOS Online';
-                txt.style.color = 'var(--brand-green)';
-            } else {
-                dot.className = 'pulse-dot offline';
-                txt.textContent = 'EOS Offline';
-                txt.style.color = 'var(--brand-red)';
             }
         }
 
@@ -2075,53 +2152,38 @@ HTML_CONTENT = """<!DOCTYPE html>
             }
         }
 
-        async function saveProviderConfig() {
-            const eosUrl = document.getElementById('modalEosUrlInput').value.trim();
-            const sel = document.getElementById('modalProviderSelect');
-            const [prov, zone] = sel.value.split(':');
-            const vat = parseFloat(document.getElementById('modalVatInput').value) || 0.0;
+        function savePersonalConfig() {
+            userSettings.vat_percent = parseFloat(document.getElementById('modalVatInput').value) || 0.0;
             const fees = [];
             for (let h = 0; h < 24; h++) {
                 const el = document.getElementById(`fee_${h}`);
                 fees.push(parseFloat(el ? el.value : 15.0) || 0.0);
             }
+            userSettings.hourly_fees = fees;
 
-            try {
-                const res = await fetch('/api/config/provider', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        eos_url: eosUrl,
-                        provider: prov,
-                        bidding_zone: zone || 'DE-LU',
-                        vat_percent: vat,
-                        hourly_fees: fees
-                    })
-                });
-                if (!res.ok) throw new Error('Fehler beim Speichern');
-                const data = await res.json();
-                providerSettings = data.settings;
-                updateHeaderPill();
-                closeConfigModal();
-                triggerRecalc();
-            } catch (e) {
-                alert('Fehler beim Speichern der Konfiguration: ' + e.message);
-            }
+            saveUserStorage();
+            updateHeaderPill();
+            closeConfigModal();
+            triggerRecalc();
         }
 
         function updateHeaderPill() {
-            const p = providerSettings.provider || 'ElecPriceEnergyCharts';
-            const shortName = p.replace('ElecPrice', '');
-            const avgFeeNet = (providerSettings.hourly_fees.reduce((a,b)=>a+b, 0) / 24).toFixed(1);
-            const vat = providerSettings.vat_percent !== undefined ? providerSettings.vat_percent : 19.0;
-            document.getElementById('headerProviderPill').textContent = `${shortName} · Ø ${avgFeeNet} ct + ${vat}%`;
+            const avgFeeNet = (userSettings.hourly_fees.reduce((a,b)=>a+b, 0) / 24).toFixed(1);
+            document.getElementById('headerProviderPill').textContent = `Ø ${avgFeeNet} ct + ${userSettings.vat_percent}% MwSt`;
+        }
+
+        function persistAndRecalc() {
+            userSettings.battery_cap = parseFloat(document.getElementById('batteryCap').value);
+            userSettings.charge_power = parseFloat(document.getElementById('chargePower').value);
+            saveUserStorage();
+            triggerRecalc();
         }
 
         // Calculation & Planning
         let debounceTimer = null;
         function triggerRecalc() {
             if (debounceTimer) clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(doRecalc, 150);
+            debounceTimer = setTimeout(doRecalc, 120);
         }
 
         async function doRecalc() {
@@ -2133,9 +2195,8 @@ HTML_CONTENT = """<!DOCTYPE html>
                 efficiency_percent: 90.0,
                 deadline_iso: currentDeadlineIso,
                 strategy: currentStrategy,
-                vat_percent: providerSettings.vat_percent,
-                hourly_fees: providerSettings.hourly_fees,
-                eos_url: providerSettings.eos_url
+                vat_percent: userSettings.vat_percent,
+                hourly_fees: userSettings.hourly_fees
             };
 
             try {
@@ -2158,7 +2219,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                 renderResult(data);
             } catch (err) {
                 console.error(err);
-                showError('Verbindung zum EOS-Server fehlgeschlagen.');
+                showError('Verbindung zum Server fehlgeschlagen.');
                 setLiveStatus(false);
             }
         }
@@ -2169,8 +2230,21 @@ HTML_CONTENT = """<!DOCTYPE html>
             warningEl.textContent = '❌ ' + msg;
         }
 
+        function setLiveStatus(isOnline) {
+            const dot = document.getElementById('liveDot');
+            const txt = document.getElementById('liveText');
+            if (isOnline) {
+                dot.className = 'pulse-dot';
+                txt.textContent = 'EOS Börse Aktiv';
+                txt.style.color = 'var(--brand-green)';
+            } else {
+                dot.className = 'pulse-dot offline';
+                txt.textContent = 'Börsendaten Offline';
+                txt.style.color = 'var(--brand-red)';
+            }
+        }
+
         function renderResult(data) {
-            // Warning Banner
             const warningEl = document.getElementById('warningBanner');
             if (data.warning) {
                 warningEl.style.display = 'block';
@@ -2179,7 +2253,6 @@ HTML_CONTENT = """<!DOCTYPE html>
                 warningEl.style.display = 'none';
             }
 
-            // Times
             const startDt = new Date(data.start_time);
             const endDt = new Date(data.end_time);
 
@@ -2194,15 +2267,12 @@ HTML_CONTENT = """<!DOCTYPE html>
             document.getElementById('recEndTime').textContent = formatTime(endDt);
             document.getElementById('recDuration').textContent = `Effektive Ladedauer: ${data.duration_formatted} (${data.slots_count * 15} Minuten)`;
 
-            // Countdown Badge
             const cdBadge = document.getElementById('countdownBadge');
             cdBadge.textContent = data.countdown_text;
             cdBadge.classList.toggle('urgent', data.start_soon);
 
-            // Added Range
             document.getElementById('addedRangeBadge').textContent = `+${data.range_km} km Reichweite`;
 
-            // Metrics (Gross with VAT info)
             document.getElementById('resEnergy').textContent = `${data.energy_grid_kwh.toFixed(1)} kWh`;
             document.getElementById('resBatteryEnergy').textContent = `${data.energy_battery_kwh.toFixed(1)} kWh netto`;
 
@@ -2215,7 +2285,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             document.getElementById('resSavings').textContent = `${data.savings_vs_now_euro.toFixed(2)} €`;
             document.getElementById('resSavingsSub').textContent = `Ersparnis vs. Sofortladen (${data.immediate_cost_euro.toFixed(2)} € brutto)`;
 
-            // Render Timeline Chart Bars
             renderBars(data.timeline);
         }
 
@@ -2225,12 +2294,11 @@ HTML_CONTENT = """<!DOCTYPE html>
 
             if (!timeline || timeline.length === 0) return;
 
-            // Compute scaling maxima depending on view
             const maxTotal = Math.max(...timeline.map(t => Math.max(t.total_price, 1.0)), 25.0);
             const maxSpot = Math.max(...timeline.map(t => Math.max(t.spot_price, 1.0)), 15.0);
 
             const effectiveMax = (chartViewMode === 'spot') ? maxSpot : maxTotal;
-            const chartH = 125; // max px height for highest bar
+            const chartH = 125;
 
             timeline.forEach((item, idx) => {
                 const col = document.createElement('div');
@@ -2245,7 +2313,6 @@ HTML_CONTENT = """<!DOCTYPE html>
                 const timeStr = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
                 const dateStr = d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: 'short' });
 
-                // Add Day Label Tag if it's the start of a day
                 if (item.is_day_start) {
                     const tag = document.createElement('div');
                     tag.className = 'day-label-tag';
@@ -2253,7 +2320,6 @@ HTML_CONTENT = """<!DOCTYPE html>
                     col.appendChild(tag);
                 }
 
-                // Stack wrapper
                 const stack = document.createElement('div');
                 stack.className = 'bar-stack';
 
@@ -2262,13 +2328,11 @@ HTML_CONTENT = """<!DOCTYPE html>
                 const totalH = Math.max(2, Math.round((Math.max(0, item.total_price) / effectiveMax) * chartH));
 
                 if (chartViewMode === 'stacked') {
-                    // Fee segment on top
                     const feeSeg = document.createElement('div');
                     feeSeg.className = 'bar-seg-fee';
                     feeSeg.style.height = `${feeH}px`;
                     stack.appendChild(feeSeg);
 
-                    // Spot segment below
                     const spotSeg = document.createElement('div');
                     spotSeg.className = 'bar-seg-spot';
                     spotSeg.style.height = `${spotH}px`;
@@ -2292,7 +2356,6 @@ HTML_CONTENT = """<!DOCTYPE html>
 
                 col.appendChild(stack);
 
-                // Tooltip interaction
                 col.addEventListener('mouseenter', (e) => {
                     let tagHtml = '';
                     if (item.is_charging) tagHtml = '<span class="tt-tag charge">⚡️ Ladefenster</span>';
@@ -2332,7 +2395,6 @@ HTML_CONTENT = """<!DOCTYPE html>
                     tooltipEl.style.display = 'none';
                 });
 
-                // Hourly label (every 4th slot = 60 min)
                 if (idx % 4 === 0) {
                     const label = document.createElement('div');
                     label.className = 'bar-time-label';
@@ -2351,7 +2413,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             tooltipEl.style.top = y + 'px';
         }
 
-        // Navigation scroll helpers
         function scrollToNow() {
             const container = document.getElementById('chartBars');
             container.scrollTo({ left: 0, behavior: 'smooth' });
@@ -2375,7 +2436,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             }
         }
 
-        // Enable horizontal scrolling with vertical mouse wheel
         const chartContainer = document.getElementById('chartBars');
         chartContainer.addEventListener('wheel', (e) => {
             if (e.deltaY !== 0) {
@@ -2384,17 +2444,43 @@ HTML_CONTENT = """<!DOCTYPE html>
             }
         }, { passive: false });
 
-        // Initialize on page load
+        // Initialize on page load with LocalStorage restoration
         window.addEventListener('DOMContentLoaded', async () => {
+            loadUserStorage();
+
+            // Restore vehicle inputs
+            document.getElementById('batteryCap').value = userSettings.battery_cap;
+            updateVal('capVal', userSettings.battery_cap + ' kWh');
+
+            document.getElementById('chargePower').value = userSettings.charge_power;
+            updateVal('powerVal', parseFloat(userSettings.charge_power).toFixed(1) + ' kW');
+
+            document.getElementById('socIst').value = userSettings.soc_ist;
+            updateVal('socIstVal', userSettings.soc_ist + '%');
+
+            document.getElementById('socSoll').value = userSettings.soc_soll;
+            updateVal('socSollVal', userSettings.soc_soll + '%');
+
+            // Restore preset button styling
+            if (userSettings.vehicle_preset) {
+                document.querySelectorAll('.form-group .preset-buttons .chip-btn').forEach(b => b.classList.remove('active'));
+                if (userSettings.vehicle_preset === 'ev3_53') document.getElementById('btnPresetEV3_53')?.classList.add('active');
+                else if (userSettings.vehicle_preset === 'ev3_81') document.getElementById('btnPresetEV3_81')?.classList.add('active');
+                else if (userSettings.vehicle_preset === 'model3') document.getElementById('btnPresetModel3')?.classList.add('active');
+            }
+
+            updateHeaderPill();
+
+            // Check system read-only status
             try {
-                const res = await fetch('/api/config/provider');
-                if (res.ok) {
-                    const data = await res.json();
-                    providerSettings = data.settings;
-                    updateHeaderPill();
+                const sysRes = await fetch('/api/system');
+                if (sysRes.ok) {
+                    const sys = await sysRes.json();
+                    isReadOnly = sys.read_only;
+                    setLiveStatus(sys.eos_online);
                 }
             } catch (e) {
-                console.warn('Could not load provider settings', e);
+                console.warn('Systemstatus konnte nicht abgerufen werden', e);
             }
 
             const firstPresetBtn = document.querySelector('.form-group .preset-buttons .chip-btn');
@@ -2413,5 +2499,6 @@ def index():
 
 if __name__ == "__main__":
     print(f"Starting EOS Smart Charge Planner on http://127.0.0.1:{PORT}")
+    print(f"Read-Only Mode: {'AKTIV (Sicher für Multi-User / Public SaaS)' if READ_ONLY_MODE else 'DEAKTIVIERT (Lokaler Admin-Modus)'}")
     print(f"Target EOS Server: {get_active_eos_url()}")
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")

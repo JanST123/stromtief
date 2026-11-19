@@ -1,6 +1,8 @@
 # ⚡️ EOS Smart Charge Planner
 
 > **Smarte Ladeplanung für E-Autos mit dynamischen Stromtarifen (Ostrom, Tibber, EPEX Spot) auf Basis von [Akkudoktor EOS](https://github.com/Akkudoktor-EOS/EOS).**
+> 
+> Konzipiert für den lokalen Eigenbetrieb **oder** als sicherer, mandantenfähiger Online-Dienst für tausende Nutzer.
 
 Der **EOS Smart Charge Planner** bietet eine aufgeräumte, moderne und reaktionsschnelle Weboberfläche, die E-Auto-Besitzern auf einen Blick anzeigt:
 1. **Wann muss das Auto angesteckt werden**, um zur gewünschten Abfahrtszeit zum günstigsten Börsenstrompreis voll zu sein?
@@ -9,13 +11,30 @@ Der **EOS Smart Charge Planner** bietet eine aufgeräumte, moderne und reaktions
 
 ---
 
+## 🛡️ Multi-User & Read-Only Architektur (SaaS-Betrieb)
+
+Akkudoktor EOS ist von Haus aus ein lokales Einzelsystem ohne Benutzerverwaltung. Der **EOS Smart Charge Planner** macht daraus einen sicheren Onlineservice:
+
+* **Zentraler Börsenpreis-Feed:** Eine einzige EOS-Instanz holt die EPEX-Spot-Auktion für die gesamte Preiszone (DE-LU bzw. AT) und cacht diese im Arbeitsspeicher.
+* **100 % Privatsphäre via LocalStorage:** Fahrzeugdaten (Kapazität, Ladeleistung, SoC), individuelle Netzentgelte (0–23h) und der MwSt.-Satz werden **ausschließlich im Browser des Nutzers** gespeichert.
+* **Keine Benutzerdatenbank nötig:** Völlig DSGVO-konform, keine Registrierung, keine Passwörter, keine Cookies.
+* **Sicherer Read-Only-Schutzschild (`READ_ONLY_MODE=true`):**
+  * EOS-Schreibbefehle (`PUT /v1/config`, `POST /v1/admin/*`) sind komplett gesperrt.
+  * In Docker läuft EOS auf einem internen, isolierten Netzwerk **ohne offene Ports nach außen**.
+
+```mermaid
+flowchart LR
+    Internet((Internet / Nutzer)) -->|Öffentlich: Port 443 / 8505| UI[Smart Charge UI / Proxy]
+    UI -->|Nur intern im Docker-Netzwerk: Port 8503| EOS[(EOS Server - Read Only)]
+    style EOS fill:#1e293b,stroke:#ef4444,stroke-width:2px
+    style UI fill:#0f172a,stroke:#10b981,stroke-width:2px
+```
+
+---
+
 ## ✨ Features
 
-* **🔌 Konfigurierbarer EOS-Endpunkt:**
-  * Verbindung zu lokalem EOS (`http://127.0.0.1:8503`) oder Netzwerk-Installationen (z. B. Raspberry Pi, Home Assistant unter `http://192.168.178.50:8503`).
-  * Integrierter Verbindungstest mit Status-Badge.
-* **⚡️ Spotmarkt-Quellenauswahl:**
-  * Direkte Umschaltung der Börsenpreisquelle in EOS (Energy-Charts DE-LU/AT/CH, SMARD.de Bundesnetzagentur, Akkudoktor Community Server).
+* **⚡️ Börsenpreise & 48h-Vorhersage:** Direkte Anbindung an Day-Ahead-Spotmarktpreise via EOS.
 * **💶 Flexible Netzentgelte & 24h-Stundengebühren (0–23 Uhr):**
   * Erfassung von fixen oder zeitvariablen Netzentgelten (§ 14a EnWG Modul 3, Hoch-/Niedertarif).
   * 1-Klick-Presets (*Ostrom Standard 15 ct*, *§ 14a EnWG Dynamisch 10/16 ct*, *Tag/Nacht HT/NT*, *Reiner Börsenpreis 0 ct*).
@@ -50,60 +69,29 @@ cd eos-smart-charge-ui
 pip install -r requirements.txt
 
 # Starten (Standard: Port 8505, EOS unter http://127.0.0.1:8503)
-python app.py
-
-# Oder mit dem Start-Skript:
 ./start.sh
 ```
 
 Öffnen Sie anschließend **[http://localhost:8505](http://localhost:8505)** im Browser.
 
-### Option 2: Mit Docker / Docker Compose
+### Option 2: Produktion / Onlineservice mit Docker Compose
+
+Startet EOS isoliert und stellt nur die Smart Charge UI nach außen bereit:
 
 ```bash
-# Starten per Docker Compose
 docker compose up -d
 ```
 
-In `docker-compose.yml` können Sie die Umgebungsvariable `EOS_API_URL` anpassen, z. B.:
-```yaml
-environment:
-  - SMART_CHARGE_PORT=8505
-  - EOS_API_URL=http://192.168.178.50:8503
-```
-
 ---
 
-## ⚙️ Konfiguration
+## ⚙️ Umgebungsvariablen
 
-Die Einstellungen werden automatisch in `data/settings.json` gespeichert und können jederzeit über das Zahnrad-Symbol (**`⚙️ EOS & Tarif-Einstellungen`**) in der UI angepasst werden:
-
-```json
-{
-  "eos_url": "http://127.0.0.1:8503",
-  "provider": "ElecPriceEnergyCharts",
-  "bidding_zone": "DE-LU",
-  "vat_percent": 19.0,
-  "hourly_fees": [
-    15.0, 15.0, 15.0, 15.0, 15.0, 15.0,
-    15.0, 15.0, 15.0, 15.0, 15.0, 15.0,
-    15.0, 15.0, 15.0, 15.0, 15.0, 15.0,
-    15.0, 15.0, 15.0, 15.0, 15.0, 15.0
-  ]
-}
-```
-
----
-
-## 🏡 Home Assistant Integration
-
-Sie können die UI als Dashboard-Karte in Home Assistant einbinden:
-
-```yaml
-type: iframe
-url: http://192.168.178.XX:8505/
-aspect_ratio: 100%
-```
+| Variable | Standard | Beschreibung |
+|---|---|---|
+| `READ_ONLY_MODE` | `true` | Sperrt EOS-Schreibzugriffe und aktiviert LocalStorage-Betrieb für öffentliche Deployments. |
+| `EOS_API_URL` | `http://127.0.0.1:8503` | Adresse des Akkudoktor EOS Servers. |
+| `SMART_CHARGE_PORT` | `8505` | Port für die Webanwendung. |
+| `ADMIN_TOKEN` | *leer* | Optionaler Admin-Token für Konfigurationsänderungen via API. |
 
 ---
 
@@ -111,12 +99,12 @@ aspect_ratio: 100%
 
 | Methode | Endpunkt | Beschreibung |
 |---|---|---|
-| `GET` | `/` | Web-Oberfläche |
-| `GET` | `/api/prices` | 15-Minuten-Preisreihe mit Netto-/Brutto-Aufschlüsselung |
-| `POST` | `/api/plan` | Berechnet optimales Ladefenster basierend auf Fahrzeugdaten & Deadline |
-| `GET` | `/api/config/provider` | Ruft aktuelle Tarif-, MwSt.- und EOS-Einstellungen ab |
-| `POST` | `/api/config/provider` | Speichert Einstellungen und aktualisiert EOS |
-| `POST` | `/api/eos/test` | Prüft die Verbindung zu einer EOS Server-URL |
+| `GET` | `/` | Responsive Web-App |
+| `GET` | `/api/system` | Systemstatus, Read-Only-Modus & EOS-Verbindungsstatus |
+| `GET` | `/api/prices` | 15-Minuten-Börsenpreisreihe mit Netto-/Brutto-Aufschlüsselung (gecacht) |
+| `POST` | `/api/plan` | Berechnet optimales Ladefenster rein im Arbeitsspeicher (Memory-Only) |
+| `GET` | `/api/config/provider` | Ruft Standard-Tarifkonfiguration ab |
+| `POST` | `/api/config/provider` | *(Gesperrt im Read-Only-Modus)* Server-Konfiguration anpassen |
 
 ---
 

@@ -1,17 +1,42 @@
 version: "3.8"
 
 services:
+  # 1. Akkudoktor EOS Backend (Isolated, no public ports!)
+  eos:
+    image: akkudoktoreos/eos:latest
+    container_name: eos-backend
+    restart: unless-stopped
+    # NOTE: In production, do NOT expose ports 8503/8504 to the host or internet!
+    # EOS is only reachable within the internal docker network.
+    expose:
+      - "8503"
+    volumes:
+      - eos-data:/eos/data
+    environment:
+      - EOS_DATA_DIR=/eos/data
+    networks:
+      - eos-internal
+
+  # 2. Smart Charge UI (Public web app & secure read-only proxy)
   smart-charge-ui:
     build: .
     container_name: eos-smart-charge-ui
     restart: unless-stopped
     ports:
+      # Only the UI is accessible from the outside!
       - "8505:8505"
     environment:
       - SMART_CHARGE_PORT=8505
-      # Set to your EOS server address (e.g. http://host.docker.internal:8503 or http://192.168.178.50:8503)
-      - EOS_API_URL=http://host.docker.internal:8503
-    volumes:
-      - ./data:/app/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - EOS_API_URL=http://eos:8503
+      - READ_ONLY_MODE=true  # Protects EOS from public modifications; uses client-side LocalStorage
+    networks:
+      - eos-internal
+    depends_on:
+      - eos
+
+volumes:
+  eos-data:
+
+networks:
+  eos-internal:
+    driver: bridge
