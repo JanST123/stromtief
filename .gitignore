@@ -24,8 +24,19 @@ wheels/
 venv/
 ENV/
 
+# Environment & secrets
 .env
-.DS_Store
+.env.*
+*.env
+*.pem
+*.key
+*.pub
+*.cert
+*.crt
+id_*
+known_hosts
 
 # Local application data (saved tariffs, caches)
 data/
+.scratch/
+
