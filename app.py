@@ -2898,7 +2898,10 @@ HTML_CONTENT = """<!DOCTYPE html>
                     deferredPrompt = null;
                 });
             } else {
-                alert('App auf dem Smartphone installieren:\n\n• iOS / Safari: Tippe unten auf das Teilen-Symbol ⎋ und wähle "Zum Home-Bildschirm" 📲\n• Android / Chrome: Tippe oben rechts auf das Menü ⋮ und wähle "App installieren" bzw. "Zum Startbildschirm hinzufügen" 📲');
+                alert(`App auf dem Smartphone installieren:
+
+• iOS / Safari: Tippe unten auf das Teilen-Symbol ⎋ und wähle "Zum Home-Bildschirm" 📲
+• Android / Chrome: Tippe oben rechts auf das Menü ⋮ und wähle "App installieren" bzw. "Zum Startbildschirm hinzufügen" 📲`);
             }
         }
 
