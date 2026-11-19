@@ -621,6 +621,21 @@ HTML_CONTENT = """<!DOCTYPE html>
     <title>E-Auto Günstig Laden — Smart Charge Planner</title>
     <!-- Zero-dependency QR Code Generator -->
     <script src="/static/qrcode.min.js"></script>
+    <!-- Matomo -->
+    <script>
+      var _paq = window._paq = window._paq || [];
+      /* tracker methods like "setCustomDimension" should be called before "trackPageView" */
+      _paq.push(['trackPageView']);
+      _paq.push(['enableLinkTracking']);
+      (function() {
+        var u="//piwik.jan8.de/";
+        _paq.push(['setTrackerUrl', u+'matomo.php']);
+        _paq.push(['setSiteId', '20']);
+        var d=document, g=d.createElement('script'), s=d.getElementsByTagName('script')[0];
+        g.async=true; g.src=u+'matomo.js'; s.parentNode.insertBefore(g,s);
+      })();
+    </script>
+    <!-- End Matomo Code -->
     <style>
         :root {
             --bg: #0b0f17;
