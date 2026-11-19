@@ -105,3 +105,11 @@ docker compose up -d
 | `POST` | `/api/plan` | Evaluates optimal charging schedule in memory |
 | `GET` | `/api/config/provider` | Retrieves default provider information |
 | `POST` | `/api/config/provider` | *(Blocked in read-only mode)* Updates server configuration |
+
+---
+
+## 📄 License
+
+This project is open-source under the terms of the [MIT License](LICENSE).
+Built on top of the open-source energy management system [Akkudoktor EOS](https://github.com/Akkudoktor-EOS/EOS).
+
