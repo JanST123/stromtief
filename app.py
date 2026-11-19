@@ -22,7 +22,7 @@ import urllib.error
 import uvicorn
 from fastapi import FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -237,6 +237,22 @@ class CalcRequest(BaseModel):
     vat_percent: Optional[float] = Field(default=19.0)
     hourly_fees: Optional[List[float]] = None
     eos_url: Optional[str] = None
+
+
+@app.get("/manifest.webmanifest")
+def get_manifest():
+    manifest_path = os.path.join(STATIC_DIR, "manifest.webmanifest")
+    return FileResponse(manifest_path, media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def get_service_worker():
+    sw_path = os.path.join(STATIC_DIR, "sw.js")
+    return FileResponse(
+        sw_path,
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/"},
+    )
 
 
 @app.get("/api/system")
@@ -618,7 +634,12 @@ HTML_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>E-Auto Günstig Laden — Smart Charge Planner</title>
+    <title>Stromtief — E-Auto Ladeplaner</title>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#10b981">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Stromtief">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
@@ -1723,6 +1744,9 @@ HTML_CONTENT = """<!DOCTYPE html>
                 </div>
             </div>
             <div class="header-actions">
+                <button class="config-btn" id="btnInstallPwa" onclick="installPwa()" style="display: none; background: rgba(16, 185, 129, 0.18); border-color: rgba(16, 185, 129, 0.45); color: #34d399;" title="Stromtief als eigenständige App auf deinem Gerät installieren">
+                    <span>⚡️ App installieren</span>
+                </button>
                 <button class="config-btn share-btn" onclick="openShareModal()" title="Einstellungen per QR-Code oder Link auf Smartphone übertragen">
                     <span>📲 Aufs Handy übertragen</span>
                 </button>
@@ -2847,6 +2871,45 @@ HTML_CONTENT = """<!DOCTYPE html>
                 chartContainer.scrollLeft += e.deltaY;
             }
         }, { passive: false });
+
+        // Progressive Web App (PWA) Support
+        let deferredPrompt = null;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            const btn = document.getElementById('btnInstallPwa');
+            if (btn) btn.style.display = 'inline-flex';
+        });
+
+        window.addEventListener('appinstalled', () => {
+            deferredPrompt = null;
+            const btn = document.getElementById('btnInstallPwa');
+            if (btn) btn.style.display = 'none';
+            showToast('Stromtief wurde erfolgreich als App installiert!');
+        });
+
+        function installPwa() {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                deferredPrompt.userChoice.then((choiceResult) => {
+                    if (choiceResult.outcome === 'accepted') {
+                        console.log('User accepted the PWA install prompt');
+                    }
+                    deferredPrompt = null;
+                });
+            } else {
+                alert('App auf dem Smartphone installieren:\n\n• iOS / Safari: Tippe unten auf das Teilen-Symbol ⎋ und wähle "Zum Home-Bildschirm" 📲\n• Android / Chrome: Tippe oben rechts auf das Menü ⋮ und wähle "App installieren" bzw. "Zum Startbildschirm hinzufügen" 📲');
+            }
+        }
+
+        // Register Service Worker for offline support & fast caching
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js', { scope: '/' })
+                    .then((reg) => console.log('ServiceWorker registered with scope:', reg.scope))
+                    .catch((err) => console.log('ServiceWorker registration failed:', err));
+            });
+        }
 
         // Initialize on page load with LocalStorage restoration & sync check
         window.addEventListener('DOMContentLoaded', async () => {
