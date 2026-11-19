@@ -1,9 +1,7 @@
-version: "3.8"
-
 services:
   # 1. Akkudoktor EOS Backend (Isolated, no public ports!)
   eos:
-    image: akkudoktoreos/eos:latest
+    image: akkudoktor/eos:latest
     container_name: eos-backend
     restart: unless-stopped
     # NOTE: In production, do NOT expose ports 8503/8504 to the host or internet!
