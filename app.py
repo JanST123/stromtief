@@ -619,6 +619,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>E-Auto Günstig Laden — Smart Charge Planner</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
     <!-- Zero-dependency QR Code Generator -->
     <script src="/static/qrcode.min.js"></script>
     <!-- Matomo -->
