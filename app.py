@@ -1912,6 +1912,18 @@ HTML_CONTENT = """<!DOCTYPE html>
                 <div class="legend-item"><div class="legend-line deadline"></div> Abfahrtszeit / Deadline</div>
             </div>
         </div>
+
+        <!-- App Footer with Legal Links -->
+        <footer style="margin-top: 36px; padding: 20px 0 30px; border-top: 1px solid var(--surface-border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 0.8rem; color: var(--text-secondary);">
+            <div>⚡️ <strong>stromtief</strong> • Angetrieben von <a href="https://github.com/Akkudoktor-EOS/EOS" target="_blank" rel="noopener" style="color: var(--brand-blue); text-decoration: none;">Akkudoktor EOS</a></div>
+            <div style="display: flex; gap: 16px;">
+                <a href="https://stromtief.de" style="color: var(--text-secondary); text-decoration: none;">Startseite</a>
+                <a href="https://stromtief.de/impressum.html" target="_blank" rel="noopener" style="color: var(--text-secondary); text-decoration: none;">Impressum</a>
+                <a href="https://stromtief.de/datenschutz.html" target="_blank" rel="noopener" style="color: var(--text-secondary); text-decoration: none;">Datenschutz</a>
+                <a href="https://stromtief.de/haftungsausschluss.html" target="_blank" rel="noopener" style="color: var(--text-secondary); text-decoration: none;">Haftungsausschluss</a>
+                <a href="https://github.com/JanST123/stromtief" target="_blank" rel="noopener" style="color: var(--text-secondary); text-decoration: none;">GitHub</a>
+            </div>
+        </footer>
     </div>
 
     <!-- Floating Tooltip for Chart -->
