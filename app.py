@@ -10,10 +10,12 @@ Supports Multi-User & Public SaaS operation with client-side LocalStorage,
 server-side Read-Only protection, and seamless Cross-Device Settings Sync via QR Code & Link.
 """
 
-from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import socket
+import threading
 import time
 from typing import Any, Dict, List, Optional
 from urllib.request import Request, urlopen
@@ -48,6 +50,7 @@ DEFAULT_SETTINGS = {
 # In-memory Price Cache to protect EOS from multi-user load spikes
 _PRICE_CACHE: Dict[str, float] = {}
 _PRICE_CACHE_TIME: float = 0.0
+_LAST_EOS_UPDATE_TIME: float = 0.0
 CACHE_TTL_SECONDS = 180  # 3 minutes
 
 
@@ -91,7 +94,58 @@ def save_settings(settings: Dict[str, Any]) -> None:
         json.dump(settings, f, indent=2)
 
 
-app = FastAPI(title="EOS Smart Charge Planner")
+def get_active_eos_url() -> str:
+    """Get currently configured EOS API URL."""
+    settings = load_settings()
+    return settings.get("eos_url", DEFAULT_EOS_URL).rstrip("/")
+
+
+def trigger_eos_prediction_update(eos_url: Optional[str] = None) -> bool:
+    """Trigger upstream electricity price update on EOS backend."""
+    global _LAST_EOS_UPDATE_TIME
+    base_url = (eos_url or get_active_eos_url()).rstrip("/")
+    try:
+        update_req = Request(
+            f"{base_url}/v1/prediction/update",
+            data=b"{}",
+            headers={"Content-Type": "application/json", "User-Agent": "SmartChargePlanner/1.0"},
+            method="POST",
+        )
+        with urlopen(update_req, timeout=15) as res:
+            if res.status == 200:
+                _LAST_EOS_UPDATE_TIME = time.time()
+                return True
+    except Exception as e:
+        print(f"[Warning] Failed to trigger EOS prediction update ({base_url}): {e}")
+    return False
+
+
+def periodic_price_updater_loop() -> None:
+    """Background worker to continuously keep EOS predictions and cache fresh."""
+    time.sleep(2)  # Give uvicorn a moment to bind
+    while True:
+        try:
+            ensure_eos_initialized()
+            trigger_eos_prediction_update()
+            prices = fetch_eos_prices(force_refresh=True)
+            if prices:
+                keys = sorted(prices.keys())
+                print(f"[PriceUpdater] Successfully updated {len(keys)} price slots: {keys[0]} -> {keys[-1]}")
+        except Exception as e:
+            print(f"[PriceUpdater] Background update error: {e}")
+        # Run every 20 minutes (day-ahead prices publish ~13:00 CET daily)
+        time.sleep(1200)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Launch background updater thread
+    updater = threading.Thread(target=periodic_price_updater_loop, daemon=True, name="PriceUpdaterThread")
+    updater.start()
+    yield
+
+
+app = FastAPI(title="EOS Smart Charge Planner", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -102,12 +156,6 @@ app.add_middleware(
 
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-
-def get_active_eos_url() -> str:
-    """Get currently configured EOS API URL."""
-    settings = load_settings()
-    return settings.get("eos_url", DEFAULT_EOS_URL).rstrip("/")
 
 
 def ensure_eos_initialized(eos_url: Optional[str] = None) -> None:
@@ -146,7 +194,7 @@ def ensure_eos_initialized(eos_url: Optional[str] = None) -> None:
 
 
 def fetch_eos_prices(eos_url: Optional[str] = None, force_refresh: bool = False) -> Dict[str, float]:
-    """Fetch current price predictions with in-memory caching."""
+    """Fetch current price predictions with in-memory caching and proactive refresh."""
     global _PRICE_CACHE, _PRICE_CACHE_TIME
     now = time.time()
 
@@ -157,12 +205,23 @@ def fetch_eos_prices(eos_url: Optional[str] = None, force_refresh: bool = False)
     url = f"{base_url}/v1/prediction/series?key=elecprice_marketprice_wh"
     req = Request(url, headers={"User-Agent": "SmartChargePlanner/1.0"})
     try:
-        with urlopen(req, timeout=5) as response:
+        with urlopen(req, timeout=6) as response:
             data = json.loads(response.read().decode("utf-8"))
             prices = data.get("data", {})
             if prices:
                 _PRICE_CACHE = prices
                 _PRICE_CACHE_TIME = now
+
+                # Proactive check: if newest prediction slot is under 8h away, trigger upstream update in background
+                try:
+                    latest_slot = max(prices.keys())
+                    latest_dt = datetime.fromisoformat(latest_slot.replace("Z", "+00:00"))
+                    now_utc = datetime.now(timezone.utc)
+                    if (latest_dt - now_utc).total_seconds() < 8 * 3600:
+                        if now - _LAST_EOS_UPDATE_TIME > 300:
+                            threading.Thread(target=trigger_eos_prediction_update, args=(base_url,), daemon=True).start()
+                except Exception:
+                    pass
             elif not _PRICE_CACHE:
                 ensure_eos_initialized(base_url)
             return prices
