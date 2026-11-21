@@ -42,9 +42,10 @@ This document captures the project architecture, deployment setup, configuration
      - Dangerous endpoints (`/v1/config`, `/v1/optimization`) are blocked or kept internal.
   4. The UI container port `8505` is bound strictly to `127.0.0.1:8505`.
 
-### Automatic EOS Initialization
+### Automatic EOS Initialization & Periodic Price Updater
 - Fresh EOS containers lack default price prediction settings.
 - `app.py` contains `ensure_eos_initialized()`: on startup, if no electricity price provider is active, it automatically configures `ElecPriceEnergyCharts` for region `DE-LU` via `PUT /v1/config` and triggers `POST /v1/prediction/update`.
+- **Periodic Background Updater (`periodic_price_updater_loop`)**: Akkudoktor EOS only pulls day-ahead prices when EMS is running or when `POST /v1/prediction/update` is explicitly triggered. A background worker thread runs every 20 minutes to call EOS `/v1/prediction/update` and fetch the newest prices into the cache. In addition, `fetch_eos_prices()` proactively triggers an update whenever remaining future prediction slots drop below 8 hours.
 
 ### Caddy Reverse Proxy & Routing
 - `https://stromtief.de`: Serves `/var/www/stromtief/` with clean URL rewrites:
